@@ -1,0 +1,4 @@
+{
+  "variant": "auth",
+  "source": "scripts/openapi/contracts/auth.json"
+}

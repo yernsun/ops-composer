@@ -1,0 +1,11 @@
+schema_version: 3
+template_version: 0.3.0
+template_digest: sha256:b500ef54df5fbbfb8daa010123aa5bda70d8d11fbb6b75de075b27a3e1e5d159
+project_name: OpsComposer
+project_slug: ops-composer
+command_name: ops-composer
+profile: fullstack
+auth: true
+evented: false
+sample: false
+default_locale: zh-CN

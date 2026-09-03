@@ -1,0 +1,71 @@
+name: ops-composer
+
+x-application: &application
+  image: ${OPS_COMPOSER_IMAGE:-ops-composer:local}
+  build:
+    context: .
+    target: runtime
+  environment: &application-environment
+    APP_ENV: ${APP_ENV:-production}
+    DATABASE_URL: ${DATABASE_URL:?set a PostgreSQL URL with percent-encoded credentials}
+    APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:?set the external browser origin}
+    APP_SESSION_COOKIE_SECURE: ${APP_SESSION_COOKIE_SECURE:-true}
+    APP_AUTH_RATE_LIMIT_SECRET: ${APP_AUTH_RATE_LIMIT_SECRET:?set at least 32 random bytes}
+    FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?set the trusted proxy IP or CIDR}
+    OPS_COMPOSER_MASTER_KEY: ${OPS_COMPOSER_MASTER_KEY:?set a base64-encoded 32-byte key}
+    OPS_COMPOSER_MASTER_KEY_VERSION: ${OPS_COMPOSER_MASTER_KEY_VERSION:-1}
+    OPS_COMPOSER_PLAYBOOK_WORKSPACE: /workspace
+    OPS_COMPOSER_RUNTIME_DIR: /var/lib/ops-composer/runtime
+  volumes:
+    - ${PLAYBOOK_WORKSPACE:-./playbooks}:/workspace:ro
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ops_composer}
+      POSTGRES_USER: ${POSTGRES_USER:-ops_composer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - ${POSTGRES_DATA_DIR:-./volumes/postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *application
+    restart: "no"
+    command: ["ops-composer", "migrate", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *application
+    restart: unless-stopped
+    command: ["fastapi", "run", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${APP_BIND_HOST:-127.0.0.1}:${APP_PORT:-8080}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    <<: *application
+    restart: unless-stopped
+    command: ["ops-composer", "worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully

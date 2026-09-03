@@ -1,0 +1,43 @@
+# OpsComposer Agent Guide
+
+Follow `docs/agent-rules/` before editing. These are the Project Forge rules copied from the
+generated baseline because the Codex workspace mounts `.agents/` read-only. Rules override
+documentation.
+
+## Architecture
+
+- Services own transaction boundaries and business workflows.
+- A Unit of Work is async, single-use, and bound to the task that opened it.
+- The Unit of Work owns pool acquisition and lazily caches every concrete PostgreSQL repository.
+- Repository contracts and implementations inherit `BaseRepository`; implementations are created
+  only by UnitOfWork and receive its guarded `RepositoryConnection`.
+- Repositories execute persistence queries and map rows; they never acquire a connection/cursor,
+  commit, roll back, start a transaction, or publish.
+- API handlers validate transport data and delegate to Services.
+- Run creation, target snapshots, queue state, leases, locks, and replayable events share
+  PostgreSQL transaction boundaries; no external broker is used.
+- Frontend server state belongs in Vue Query; Pinia is only for client-owned state.
+- External JSON uses camelCase; internal Python and TypeScript implementation names follow their
+  language conventions.
+
+## SQL
+
+- Bind every runtime value with a descriptive Psycopg named placeholder such as
+  `%(run_id)s`, and pass a mapping to `execute()`; positional placeholders and sequences are
+  forbidden.
+- Compose identifiers only through `psycopg.sql.Identifier` and explicit allowlists.
+- Keep `sql.SQL` inputs static. `SQL.format()` and `SQL.join()` accept trusted `Composable` structure
+  only; never embed values with `sql.Literal` or an untyped Python object.
+- Keep hot-path query shapes fixed. Use typed repository-local filters for complex searches.
+- Append dynamic predicates in canonical order and distinguish an omitted filter from SQL `NULL`.
+- Reuse `SqlPredicateBuilder` for safe mechanics, but keep identifiers, joins, and sort allowlists in
+  the repository. Escape LIKE patterns and use one array parameter for variable lists.
+- Prepare fixed hot-path statements; leave open-ended conditional shapes unprepared.
+- Prefer set-based batch SQL. Use `execute_many()` only with named mapping rows and fixed
+  `copy_rows()` for large imports; never execute one-row SQL in a loop.
+- Never accept raw SQL fragments, column names, or sort directions from requests.
+
+## Validation
+
+Run `python harness/check.py`. Set `HARNESS_STRICT=1` to fail when optional tools are absent and
+`HARNESS_DOCKER=1` to include Compose configuration checks.
