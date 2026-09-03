@@ -1,0 +1,11 @@
+# Migrations
+
+Migrations are immutable nodes with an ID, dependency list, checksum, and one forward SQL payload.
+The runner topologically sorts the DAG, rejects missing dependencies or cycles, verifies checksums
+for applied nodes, and applies pending nodes under a PostgreSQL advisory lock.
+
+There is intentionally no automatic startup migration and no `down` operation. The migration command
+validates applied history before it installs pending nodes. Application startup and readiness require
+that the applied history is known, unmodified, and has no pending nodes, so an instance with an older
+schema never accepts traffic. Operators run `ops-composer migrate status`,
+`ops-composer migrate validate`, and `ops-composer migrate up` explicitly.

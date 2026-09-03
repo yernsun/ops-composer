@@ -1,0 +1,82 @@
+name: ops-composer-dev
+
+x-backend: &backend
+  image: ops-composer-dev:local
+  build:
+    context: .
+    target: runtime
+  environment: &backend-environment
+    APP_ENV: development
+    DATABASE_URL: postgresql://ops_composer:ops_composer@db:5432/ops_composer
+    APP_ALLOWED_ORIGINS: ${DEV_APP_ALLOWED_ORIGINS:-http://localhost:5173}
+    APP_SESSION_COOKIE_SECURE: "false"
+    APP_AUTH_RATE_LIMIT_SECRET: ${DEV_AUTH_RATE_LIMIT_SECRET:-development-only-auth-rate-limit-secret}
+    OPS_COMPOSER_MASTER_KEY: ${DEV_MASTER_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+    OPS_COMPOSER_PLAYBOOK_WORKSPACE: /workspace
+    OPS_COMPOSER_RUNTIME_DIR: /var/lib/ops-composer/runtime
+  volumes:
+    - ./backend/src:/app/src:ro
+    - ./playbooks:/workspace:ro
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ops_composer
+      POSTGRES_USER: ops_composer
+      POSTGRES_PASSWORD: ops_composer
+    ports:
+      - "${DEV_DB_BIND_HOST:-127.0.0.1}:${DEV_DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ops_composer -d ops_composer"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *backend
+    command: ["ops-composer", "migrate", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    command: ["fastapi", "dev", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${DEV_API_BIND_HOST:-127.0.0.1}:${DEV_API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *backend
+    command: ["ops-composer", "worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    image: ops-composer-frontend-dev:local
+    build:
+      context: .
+      target: frontend-builder
+    working_dir: /build/frontend
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    environment:
+      VITE_API_BASE_URL: ""
+      VITE_API_PROXY_TARGET: http://api:8000
+    ports:
+      - "${DEV_FRONTEND_BIND_HOST:-127.0.0.1}:${DEV_FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/build/frontend
+      - frontend-node-modules:/build/frontend/node_modules
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  postgres-dev:
+  frontend-node-modules:

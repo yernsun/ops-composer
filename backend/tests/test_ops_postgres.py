@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import os
+from datetime import timedelta
+from uuid import uuid4
+
+import pytest
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
+
+from ops_composer.auth.service import AuthService
+from ops_composer.db.migration_engine import MigrationRunner
+from ops_composer.db.pool import create_pool
+from ops_composer.db.registry import MIGRATIONS
+from ops_composer.domain.base import utc_now
+from ops_composer.domain.errors import IdempotencyConflictError
+from ops_composer.domain.ops import CommandMode, HostGroup, RunStatus, TargetKind
+from ops_composer.services.assets import AssetService, CredentialService
+from ops_composer.services.crypto import CredentialCipher
+from ops_composer.services.runs import RunService, WorkerCoordinator
+from ops_composer.settings import Settings
+from ops_composer.uow.factory import UnitOfWorkFactory
+
+
+def _database_url() -> str:
+    value = os.getenv("TEST_DATABASE_URL")
+    if not value:
+        pytest.skip("set TEST_DATABASE_URL to run PostgreSQL queue integration tests")
+    return value
+
+
+@pytest.mark.asyncio
+async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback() -> None:
+    database_url = _database_url()
+    schema = f"ops_queue_{uuid4().hex}"
+    control_pool = create_pool(database_url)
+    await control_pool.open()
+    try:
+        async with control_pool.connection() as connection:
+            await connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+            await connection.commit()
+
+        isolated_url = make_conninfo(database_url, options=f"-c search_path={schema}")
+        pool = create_pool(isolated_url)
+        await pool.open()
+        try:
+            async with pool.connection() as connection:
+                await MigrationRunner(connection, MIGRATIONS).up()
+                await MigrationRunner(connection, MIGRATIONS).validate_current()
+
+            master_key = base64.b64encode(b"0123456789abcdef" * 2).decode()
+            settings = Settings(
+                app_env="test",
+                database_url=isolated_url,
+                master_key=master_key,
+                worker_lease_seconds=5,
+                worker_stale_after_seconds=10,
+            )
+            factory = UnitOfWorkFactory(pool)
+            administrator = await AuthService(factory, settings).bootstrap(
+                "admin", "correct horse battery staple"
+            )
+            credentials = CredentialService(factory, CredentialCipher(master_key, 1))
+            await credentials.ensure_master_key()
+            credential = await credentials.create(
+                name="integration-password",
+                username="root",
+                password="database-must-not-contain-this-secret",
+                become_password="sudo-must-not-be-plaintext",
+                become_enabled=True,
+                become_method="sudo",
+                become_user="root",
+                description="integration",
+            )
+            assets = AssetService(factory)
+            host = await assets.create_host(
+                name="integration-host",
+                address="192.0.2.20",
+                ssh_port=22,
+                credential_id=credential.credential_id,
+                python_interpreter="/usr/bin/python3",
+                enabled=True,
+                description="integration",
+                variables={"environment": "test"},
+            )
+
+            async with pool.connection() as connection:
+                row = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT encrypted_secret FROM credential_revisions "
+                            "WHERE credential_id = %(credential_id)s"
+                        ),
+                        {"credential_id": credential.credential_id},
+                    )
+                ).fetchone()
+                assert row is not None
+                assert b"database-must-not-contain-this-secret" not in row["encrypted_secret"]
+
+            runs = RunService(factory, settings)
+
+            async def create(key: str, command: str = "true"):
+                return await runs.create_command(
+                    requested_by=administrator.user_id,
+                    idempotency_key=key,
+                    target_kind=TargetKind.HOSTS,
+                    host_ids=(host.host_id,),
+                    group_id=None,
+                    mode=CommandMode.COMMAND,
+                    command=command,
+                    become="CREDENTIAL_DEFAULT",
+                    shell_confirmed=False,
+                    timeout_seconds=30,
+                    forks=1,
+                )
+
+            first, duplicate = await asyncio.gather(
+                create("postgres-idempotency-0001"),
+                create("postgres-idempotency-0001"),
+            )
+            assert first.run_id == duplicate.run_id
+            with pytest.raises(IdempotencyConflictError):
+                await create("postgres-idempotency-0001", "hostname")
+            second = await create("postgres-idempotency-0002")
+
+            worker_a = WorkerCoordinator(factory, settings, "worker-a")
+            worker_b = WorkerCoordinator(factory, settings, "worker-b")
+            claimed_first = await worker_a.claim()
+            assert claimed_first is not None
+            assert claimed_first.run_id == first.run_id
+            assert await worker_b.claim() is None
+
+            await worker_a.mark_running(first.run_id)
+            await worker_a.finish(
+                first.run_id,
+                status=RunStatus.SUCCEEDED,
+                return_code=0,
+                summary={"total": 1, "succeeded": 1, "failed": 0},
+            )
+            claimed_second = await worker_b.claim()
+            assert claimed_second is not None
+            assert claimed_second.run_id == second.run_id
+            await worker_b.mark_running(second.run_id)
+
+            expired = utc_now() - timedelta(seconds=1)
+            stale_started = expired - timedelta(seconds=settings.worker_lease_seconds)
+            async with pool.connection() as connection, connection.transaction():
+                await connection.execute(
+                    sql.SQL(
+                        "UPDATE worker_leases SET heartbeat_at = %(stale_started)s, "
+                        "expires_at = %(expired)s "
+                        "WHERE worker_id = %(worker_id)s"
+                    ),
+                    {
+                        "stale_started": stale_started,
+                        "expired": expired,
+                        "worker_id": "worker-b",
+                    },
+                )
+                await connection.execute(
+                    sql.SQL(
+                        "UPDATE host_run_locks SET acquired_at = %(stale_started)s, "
+                        "expires_at = %(expired)s "
+                        "WHERE worker_id = %(worker_id)s"
+                    ),
+                    {
+                        "stale_started": stale_started,
+                        "expired": expired,
+                        "worker_id": "worker-b",
+                    },
+                )
+            recovery = WorkerCoordinator(factory, settings, "worker-recovery")
+            assert await recovery.recover_stale() == 1
+            assert (await runs.get(second.run_id)).status is RunStatus.INTERRUPTED
+
+            appended = await asyncio.gather(
+                *(
+                    worker_a.append_event(first.run_id, event_type=f"concurrent_{index}")
+                    for index in range(12)
+                )
+            )
+            sequences = [event.sequence for event in appended]
+            assert len(set(sequences)) == 12
+            replayed = await runs.events_after(first.run_id, 0)
+            assert [event.sequence for event in replayed] == sorted(
+                event.sequence for event in replayed
+            )
+
+            now = utc_now()
+            rolled_back = HostGroup(
+                group_id=uuid4(),
+                name="must-rollback",
+                description="",
+                variables={},
+                created_at=now,
+                updated_at=now,
+            )
+            with pytest.raises(RuntimeError, match="force rollback"):
+                async with factory() as unit_of_work:
+                    await unit_of_work.assets.add_group(rolled_back)
+                    raise RuntimeError("force rollback")
+            assert all(
+                group.group_id != rolled_back.group_id for group in await assets.list_groups()
+            )
+        finally:
+            await pool.close()
+    finally:
+        async with control_pool.connection() as connection:
+            await connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
+            )
+            await connection.commit()
+        await control_pool.close()
