@@ -408,6 +408,14 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
                 ]
             )
 
+            assert await runs.dashboard() == {
+                "host_count": 2,
+                "enabled_host_count": 2,
+                "runs_today": 5,
+                "failed_runs": 3,
+                "active_runs": 0,
+            }
+
             appended = await asyncio.gather(
                 *(
                     worker_a.append_event(first.run_id, event_type=f"concurrent_{index}")

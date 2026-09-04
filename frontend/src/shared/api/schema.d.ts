@@ -947,6 +947,19 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** OverviewResponse */
+        OverviewResponse: {
+            /** Activeruns */
+            activeRuns: number;
+            /** Enabledhostcount */
+            enabledHostCount: number;
+            /** Failedruns */
+            failedRuns: number;
+            /** Hostcount */
+            hostCount: number;
+            /** Runstoday */
+            runsToday: number;
+        };
         /** Playbook */
         Playbook: {
             /**
@@ -2055,9 +2068,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OverviewResponse"];
                 };
             };
         };

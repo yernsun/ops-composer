@@ -274,7 +274,15 @@ async def test_run_playbook_and_system_routes_delegate_and_bind_context(
     principal = _principal()
     factory = cast(UnitOfWorkFactory, object())
     service = Mock()
-    service.dashboard = AsyncMock(return_value={"hostCount": 1})
+    service.dashboard = AsyncMock(
+        return_value={
+            "host_count": 2,
+            "enabled_host_count": 2,
+            "runs_today": 5,
+            "failed_runs": 2,
+            "active_runs": 0,
+        }
+    )
     service.list = AsyncMock(return_value=(run,))
     service.detail = AsyncMock(return_value=(run, (target,)))
     service.create_command = AsyncMock(return_value=run)
@@ -287,7 +295,14 @@ async def test_run_playbook_and_system_routes_delegate_and_bind_context(
     monkeypatch.setattr(runs_api, "_service", lambda _factory: service)
 
     with log_context():
-        assert await runs_api.overview(factory, principal) == {"hostCount": 1}
+        overview = await runs_api.overview(factory, principal)
+        assert overview.model_dump(by_alias=True) == {
+            "hostCount": 2,
+            "enabledHostCount": 2,
+            "runsToday": 5,
+            "failedRuns": 2,
+            "activeRuns": 0,
+        }
         assert await runs_api.list_runs(factory, principal, limit=10, offset=2) == (run,)
         detail = await runs_api.get_run(run.run_id, factory, principal)
         assert detail.targets == (target,)
