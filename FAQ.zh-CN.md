@@ -34,8 +34,16 @@ docker compose run --rm api ops-composer admin bootstrap --username admin
 
 ## 为什么 Playbook 被拒绝？
 
-只允许 Playbook Workspace 的 `playbooks/` 下 `.yml`/`.yaml` 文件。软链接或 `..` 不能
-越界，YAML 和 Ansible syntax-check 必须通过；创建 Run 后内容哈希发生变化也会拒绝执行。
+先检查 `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE`。新 Run 和 Retry 引用了未启用来源时会被拒绝。
+数据库 Playbook 必须处于启用状态并通过 YAML 与 Ansible syntax-check，Run 会固定不可变
+revision。挂载 Playbook 只允许 Workspace 的 `playbooks/` 下 `.yml`/`.yaml` 文件，软链接或
+`..` 不能越界；创建 Run 后内容哈希发生变化也会拒绝执行。
+
+## 为什么 System Doctor 显示 Playbook 挂载降级？
+
+`both` 模式会分别诊断数据库与挂载来源。挂载目录缺失只表示降级，不会阻塞数据库 Playbook。
+若完全不使用目录，可设置 `database` 让进程忽略 Workspace；`mount` 模式则会明确关闭 Web
+数据库 Playbook 管理。
 
 ## 为什么 Run 显示 INTERRUPTED？
 

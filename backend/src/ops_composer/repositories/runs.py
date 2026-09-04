@@ -13,14 +13,16 @@ from ops_composer.repositories.base import BaseRepository, RepositoryConnection,
 
 RUN_COLUMNS = sql.SQL(
     "run_id, source_run_id, kind, status, target_spec, resolved_targets, "
-    "operation_spec, inventory_snapshot, workspace_revision, credential_versions, "
+    "operation_spec, inventory_snapshot, workspace_revision, playbook_id, playbook_revision, "
+    "credential_versions, "
     "timeout_seconds, forks, cancel_requested_at, claimed_by, claimed_at, started_at, "
     "finished_at, return_code, summary, failure_code, failure_message, requested_by, "
     "idempotency_key, request_fingerprint, created_at, updated_at"
 )
 QUALIFIED_RUN_COLUMNS = sql.SQL(
     "r.run_id, r.source_run_id, r.kind, r.status, r.target_spec, r.resolved_targets, "
-    "r.operation_spec, r.inventory_snapshot, r.workspace_revision, r.credential_versions, "
+    "r.operation_spec, r.inventory_snapshot, r.workspace_revision, r.playbook_id, "
+    "r.playbook_revision, r.credential_versions, "
     "r.timeout_seconds, r.forks, r.cancel_requested_at, r.claimed_by, r.claimed_at, "
     "r.started_at, r.finished_at, r.return_code, r.summary, r.failure_code, "
     "r.failure_message, r.requested_by, r.idempotency_key, r.request_fingerprint, "
@@ -50,6 +52,9 @@ def _event(row: RepositoryRow) -> RunEvent:
 
 
 class RunRepository(BaseRepository, Protocol):
+    async def get_by_idempotency_key(
+        self, requested_by: UUID, idempotency_key: str
+    ) -> Run | None: ...
     async def create_or_get(self, run: Run, targets: tuple[RunTarget, ...]) -> tuple[Run, bool]: ...
     async def get(self, run_id: UUID) -> Run | None: ...
     async def list(self, *, limit: int, offset: int) -> tuple[Run, ...]: ...
@@ -114,17 +119,32 @@ class PostgresRunRepository(BaseRepository):
             values[key] = Jsonb(values[key])
         return values
 
+    async def get_by_idempotency_key(
+        self, requested_by: UUID, idempotency_key: str
+    ) -> Run | None:
+        row = await self.connection.fetch_one(
+            sql.SQL(
+                "SELECT {} FROM runs WHERE requested_by = %(requested_by)s "
+                "AND idempotency_key = %(idempotency_key)s"
+            ).format(RUN_COLUMNS),
+            {"requested_by": requested_by, "idempotency_key": idempotency_key},
+            prepare=True,
+        )
+        return _run(row) if row is not None else None
+
     async def create_or_get(self, run: Run, targets: tuple[RunTarget, ...]) -> tuple[Run, bool]:
         row = await self.connection.fetch_one(
             sql.SQL(
                 "INSERT INTO runs (run_id, source_run_id, kind, status, target_spec, "
                 "resolved_targets, operation_spec, inventory_snapshot, workspace_revision, "
-                "credential_versions, timeout_seconds, forks, cancel_requested_at, claimed_by, "
+                "playbook_id, playbook_revision, credential_versions, timeout_seconds, forks, "
+                "cancel_requested_at, claimed_by, "
                 "claimed_at, started_at, finished_at, return_code, summary, failure_code, "
                 "failure_message, requested_by, idempotency_key, request_fingerprint, "
                 "created_at, updated_at) VALUES (%(run_id)s, %(source_run_id)s, %(kind)s, "
                 "%(status)s, %(target_spec)s, %(resolved_targets)s, %(operation_spec)s, "
-                "%(inventory_snapshot)s, %(workspace_revision)s, %(credential_versions)s, "
+                "%(inventory_snapshot)s, %(workspace_revision)s, %(playbook_id)s, "
+                "%(playbook_revision)s, %(credential_versions)s, "
                 "%(timeout_seconds)s, %(forks)s, %(cancel_requested_at)s, %(claimed_by)s, "
                 "%(claimed_at)s, %(started_at)s, %(finished_at)s, %(return_code)s, "
                 "%(summary)s, %(failure_code)s, %(failure_message)s, %(requested_by)s, "

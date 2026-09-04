@@ -29,6 +29,8 @@ from ops_composer.domain.ops import (
     Host,
     HostGroup,
     Playbook,
+    PlaybookReference,
+    PlaybookSource,
     ResolvedHost,
     Run,
     RunEvent,
@@ -427,6 +429,17 @@ class _RunRepository:
         self.finish_result: Run | None = run
         self.claim_error: Exception | None = None
 
+    async def get_by_idempotency_key(
+        self, requested_by: UUID, idempotency_key: str
+    ) -> Run | None:
+        if (
+            self.run is not None
+            and self.run.requested_by == requested_by
+            and self.run.idempotency_key == idempotency_key
+        ):
+            return self.run
+        return None
+
     async def create_or_get(
         self, run: Run, targets: tuple[RunTarget, ...]
     ) -> tuple[Run, bool]:
@@ -550,7 +563,7 @@ async def test_run_service_validates_creates_queries_and_cancels(tmp_path: Path)
         target_kind=TargetKind.ALL,
         host_ids=(),
         group_id=None,
-        playbook_path=playbook.path,
+        playbook=PlaybookReference(source=PlaybookSource.MOUNT, path=playbook.path),
         extra_vars={"region": "test", "nested": [1, 2]},
         tags=("safe",),
         skip_tags=(),
@@ -565,7 +578,7 @@ async def test_run_service_validates_creates_queries_and_cancels(tmp_path: Path)
             target_kind=TargetKind.ALL,
             host_ids=(),
             group_id=None,
-            playbook_path=playbook.path,
+            playbook=PlaybookReference(source=PlaybookSource.MOUNT, path=playbook.path),
             extra_vars={},
             tags=(),
             skip_tags=(),
@@ -693,6 +706,7 @@ async def test_system_doctor_and_application_lifespan_failure_stages(
     tmp_path: Path,
 ) -> None:
     factory = _factory()
+    (tmp_path / "playbooks").mkdir()
     service = SystemService(
         cast(UnitOfWorkFactory, factory), Settings(playbook_workspace=tmp_path)
     )

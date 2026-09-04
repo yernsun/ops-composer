@@ -25,10 +25,19 @@ check envelope, so a lost key cannot be recovered. Startup fails closed to prote
 
 ## Why was a Playbook or Run rejected?
 
-Playbooks must be `.yml`/`.yaml` files inside the workspace's `playbooks/` directory. Traversal and
-escaping symlinks are rejected, YAML and Ansible syntax checks must pass, and the content hash must
-still match the value captured when the Run was created. A worker lease expiry produces
+Check `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` first. New Runs and retries reject a reference whose
+source is disabled. Database Playbooks must be enabled and pass YAML plus Ansible syntax checks;
+each Run pins an immutable revision. Mounted Playbooks must be `.yml`/`.yaml` files inside the
+workspace's `playbooks/` directory. Traversal and escaping symlinks are rejected, and the content
+hash must still match the value captured when the Run was created. A worker lease expiry produces
 `INTERRUPTED`; modifying operations are never retried automatically.
+
+## Why does System Doctor report a degraded Playbook mount?
+
+In `both` mode, the database and mount sources are diagnosed independently. A missing mount is
+degraded, not fatal: database Playbooks remain available. Use `database` mode to ignore the
+workspace entirely, or mount the configured directory read-only. `mount` mode intentionally
+disables Web-managed database Playbooks.
 
 ## Does an SSE disconnect lose events?
 

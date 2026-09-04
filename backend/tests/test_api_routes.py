@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from fastapi import Response
 
 import ops_composer.api.assets as assets_api
+import ops_composer.api.playbooks as playbooks_api
 import ops_composer.api.runs as runs_api
 import ops_composer.api.system as system_api
 from ops_composer.auth.models import SessionPrincipal
@@ -20,6 +22,8 @@ from ops_composer.domain.ops import (
     HostGroup,
     HostKey,
     Playbook,
+    PlaybookReference,
+    PlaybookSource,
     ResolvedHost,
     Run,
     RunEvent,
@@ -348,29 +352,29 @@ async def test_run_playbook_and_system_routes_delegate_and_bind_context(
             event,
         )
 
-    class _Catalog:
-        def __init__(self, _workspace: Path) -> None:
-            pass
-
-        async def list(self) -> tuple[Playbook, ...]:
-            return (playbook,)
-
-        async def get(self, path: str) -> Playbook:
-            assert path == playbook.path
-            return playbook
-
-        async def syntax_check(self, path: str) -> tuple[bool, str]:
-            assert path == playbook.path
-            return True, "syntax-ok"
-
-    monkeypatch.setattr(runs_api, "PlaybookCatalog", _Catalog)
-    assert await runs_api.list_playbooks(principal) == (playbook,)
-    assert await runs_api.get_playbook(playbook.path, principal) == playbook
-    validation = await runs_api.validate_playbook(
-        runs_api.PlaybookValidationRequest(path=playbook.path), principal
+    playbook_service = Mock()
+    playbook_service.list = AsyncMock(return_value=(playbook,))
+    playbook_service.get_mounted = AsyncMock(return_value=playbook)
+    playbook_service.validate_reference = AsyncMock(
+        return_value=SimpleNamespace(valid=True, output="syntax-ok")
+    )
+    monkeypatch.setattr(playbooks_api, "_service", lambda _factory: playbook_service)
+    listed = await playbooks_api.list_playbooks(factory, principal)
+    assert listed[0].path == playbook.path
+    mounted = await playbooks_api.get_mounted_playbook(playbook.path, factory, principal)
+    assert mounted.path == playbook.path
+    validation = await playbooks_api.validate_playbook(
+        playbooks_api.PlaybookValidationRequest(path=playbook.path),
+        Response(),
+        factory,
+        principal,
     )
     assert validation.valid is True
     assert validation.output == "syntax-ok"
+    playbook_service.validate_reference.assert_awaited_once_with(
+        PlaybookReference(source=PlaybookSource.MOUNT, path=playbook.path),
+        actor_user_id=principal.user_id,
+    )
 
     class _SystemService:
         def __init__(self, _factory: UnitOfWorkFactory, _settings: object) -> None:

@@ -19,12 +19,17 @@ from ops_composer.domain.errors import (
     IdempotencyConflictError,
     NotFoundError,
     OpsError,
+    PlaybookDisabledError,
+    PlaybookNotFoundError,
+    PlaybookSourceDisabledError,
     RunNotCancelableError,
     ValidationError,
 )
 from ops_composer.domain.ops import (
     TERMINAL_RUN_STATUSES,
     CommandMode,
+    PlaybookReference,
+    PlaybookSource,
     ResolvedHost,
     Run,
     RunEvent,
@@ -81,13 +86,30 @@ def _safe_operation_metadata(
         variables = operation_spec.get("extraVars", {})
         tags = operation_spec.get("tags", [])
         skip_tags = operation_spec.get("skipTags", [])
+        reference = operation_spec.get("playbook", {})
+        reference = reference if isinstance(reference, dict) else {}
         return {
-            "playbook_path": str(operation_spec.get("playbookPath", "")),
+            "playbook_source": str(reference.get("source", PlaybookSource.MOUNT.value)),
+            "playbook_id": reference.get("playbookId"),
+            "playbook_path": reference.get("path") or operation_spec.get("playbookPath"),
             "variable_names": sorted(variables) if isinstance(variables, dict) else [],
             "tag_count": len(tags) if isinstance(tags, list) else 0,
             "skip_tag_count": len(skip_tags) if isinstance(skip_tags, list) else 0,
         }
     return {"module": "ansible.builtin.ping"}
+
+
+def _playbook_source(operation_spec: dict[str, object]) -> PlaybookSource:
+    reference = operation_spec.get("playbook")
+    if isinstance(reference, dict):
+        raw_source = reference.get("source")
+        try:
+            return PlaybookSource(str(raw_source))
+        except ValueError as error:
+            raise PlaybookNotFoundError("playbook source is invalid") from error
+    if operation_spec.get("playbookPath") is not None:
+        return PlaybookSource.MOUNT
+    raise PlaybookNotFoundError("playbook reference is missing")
 
 
 class RunService:
@@ -101,8 +123,27 @@ class RunService:
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._settings = settings
-        self._playbooks = playbooks or PlaybookCatalog(settings.playbook_workspace)
+        self._playbooks = playbooks
         self._audit_source = audit_source
+
+    def _mounted_playbooks(self) -> PlaybookCatalog:
+        if self._playbooks is None:
+            self._playbooks = PlaybookCatalog(self._settings.playbook_workspace)
+        return self._playbooks
+
+    def _require_playbook_source(self, source: PlaybookSource) -> None:
+        enabled = (
+            self._settings.playbook_source_mode.database_enabled
+            if source is PlaybookSource.DATABASE
+            else self._settings.playbook_source_mode.mount_enabled
+        )
+        if not enabled:
+            raise PlaybookSourceDisabledError(
+                details={
+                    "source": source.value,
+                    "sourceMode": self._settings.playbook_source_mode.value,
+                }
+            )
 
     @staticmethod
     async def _resolve(
@@ -232,7 +273,7 @@ class RunService:
         target_kind: TargetKind,
         host_ids: tuple[UUID, ...],
         group_id: UUID | None,
-        playbook_path: str,
+        playbook: PlaybookReference,
         extra_vars: dict[str, object],
         tags: tuple[str, ...],
         skip_tags: tuple[str, ...],
@@ -242,13 +283,34 @@ class RunService:
         if not 1 <= timeout_seconds <= 86400 or not 1 <= forks <= 20:
             raise ValidationError("timeout or forks is outside the supported range")
         _validate_extra_vars(extra_vars)
-        playbook = await self._playbooks.get(playbook_path)
+        self._require_playbook_source(playbook.source)
+        workspace_revision: str | None = None
+        database_playbook_id: UUID | None = None
+        if playbook.source is PlaybookSource.MOUNT:
+            if playbook.path is None:
+                raise PlaybookNotFoundError()
+            mounted = await self._mounted_playbooks().get(playbook.path)
+            workspace_revision = mounted.sha256
+            reference: dict[str, object] = {
+                "source": PlaybookSource.MOUNT.value,
+                "path": mounted.path,
+            }
+        else:
+            if playbook.playbook_id is None:
+                raise PlaybookNotFoundError()
+            database_playbook_id = playbook.playbook_id
+            reference = {
+                "source": PlaybookSource.DATABASE.value,
+                "playbookId": str(playbook.playbook_id),
+            }
         operation: dict[str, object] = {
-            "playbookPath": playbook.path,
+            "playbook": reference,
             "extraVars": extra_vars,
             "tags": list(tags),
             "skipTags": list(skip_tags),
         }
+        if playbook.source is PlaybookSource.MOUNT:
+            operation["playbookPath"] = reference["path"]
         target: dict[str, object] = {
             "kind": target_kind.value,
             "hostIds": [str(value) for value in host_ids],
@@ -265,7 +327,8 @@ class RunService:
             target_kind=target_kind,
             host_ids=host_ids,
             group_id=group_id,
-            workspace_revision=playbook.sha256,
+            workspace_revision=workspace_revision,
+            database_playbook_id=database_playbook_id,
         )
 
     async def _create(
@@ -282,6 +345,7 @@ class RunService:
         host_ids: tuple[UUID, ...],
         group_id: UUID | None,
         workspace_revision: str | None,
+        database_playbook_id: UUID | None = None,
         source_run_id: UUID | None = None,
     ) -> Run:
         if not 8 <= len(idempotency_key) <= 200:
@@ -295,6 +359,52 @@ class RunService:
             "sourceRunId": str(source_run_id) if source_run_id else None,
         }
         fingerprint = _fingerprint(request_payload)
+        existing: Run | None = None
+        replay_event = None
+        try:
+            async with self._unit_of_work_factory() as unit_of_work:
+                existing = await unit_of_work.runs.get_by_idempotency_key(
+                    requested_by, idempotency_key
+                )
+                if existing is not None:
+                    if existing.request_fingerprint != fingerprint:
+                        raise IdempotencyConflictError()
+                    replay_event = new_audit_event(
+                        AuditAction.RUN_IDEMPOTENT_REPLAY,
+                        AuditOutcome.NOOP,
+                        source=self._audit_source,
+                        actor_user_id=requested_by,
+                        run_id=existing.run_id,
+                        resource_type="run",
+                        resource_id=existing.run_id,
+                        metadata={
+                            "operation_kind": kind.value,
+                            "target_kind": target_kind.value,
+                            **_safe_operation_metadata(kind, operation_spec),
+                        },
+                    )
+                    await unit_of_work.audit.append(replay_event)
+        except IdempotencyConflictError as error:
+            await AuditService(self._unit_of_work_factory).record_best_effort(
+                new_audit_event(
+                    AuditAction.RUN_IDEMPOTENCY_CONFLICT,
+                    AuditOutcome.DENIED,
+                    source=self._audit_source,
+                    severity=AuditSeverity.WARNING,
+                    actor_user_id=requested_by,
+                    error_code=error.code,
+                    failure_stage="idempotency",
+                    retryable=False,
+                    metadata={"operation_kind": kind.value},
+                )
+            )
+            error.audit_recorded = True
+            raise
+        if existing is not None:
+            if replay_event is None:
+                raise RuntimeError("idempotent replay completed without an audit event")
+            emit_audit_event(replay_event)
+            return existing
         now = utc_now()
         failure_stage = "target_resolution"
         try:
@@ -305,6 +415,22 @@ class RunService:
                     host_ids=host_ids,
                     group_id=group_id,
                 )
+                resolved_operation_spec = copy.deepcopy(operation_spec)
+                playbook_revision: int | None = None
+                if database_playbook_id is not None:
+                    failure_stage = "playbook_resolution"
+                    document = await unit_of_work.playbooks.get_document(database_playbook_id)
+                    if document is None:
+                        raise PlaybookNotFoundError()
+                    if not document.playbook.enabled:
+                        raise PlaybookDisabledError()
+                    playbook_revision = document.revision.revision
+                    workspace_revision = document.revision.sha256
+                    raw_reference = resolved_operation_spec.get("playbook")
+                    if not isinstance(raw_reference, dict):
+                        raise PlaybookNotFoundError()
+                    raw_reference["revision"] = playbook_revision
+                    raw_reference["sha256"] = document.revision.sha256
                 failure_stage = "run_persistence"
                 safe_inventory = build_inventory(hosts)
                 resolved = [
@@ -326,9 +452,11 @@ class RunService:
                     status=RunStatus.QUEUED,
                     target_spec=target_spec,
                     resolved_targets=resolved,
-                    operation_spec=operation_spec,
+                    operation_spec=resolved_operation_spec,
                     inventory_snapshot=safe_inventory,
                     workspace_revision=workspace_revision,
+                    playbook_id=database_playbook_id,
+                    playbook_revision=playbook_revision,
                     credential_versions=versions,
                     timeout_seconds=timeout_seconds,
                     forks=forks,
@@ -388,7 +516,7 @@ class RunService:
                         "target_count": len(hosts),
                         "timeout_seconds": timeout_seconds,
                         "forks": forks,
-                        **_safe_operation_metadata(kind, operation_spec),
+                        **_safe_operation_metadata(kind, resolved_operation_spec),
                     },
                 )
                 await unit_of_work.audit.append(event)
@@ -495,6 +623,8 @@ class RunService:
                 raise NotFoundError("run not found")
             if source.status not in TERMINAL_RUN_STATUSES:
                 raise ValidationError("only terminal runs can be retried")
+            if source.kind is RunKind.PLAYBOOK:
+                self._require_playbook_source(_playbook_source(source.operation_spec))
             source_targets = await unit_of_work.runs.targets(run_id)
             if not source_targets:
                 raise ValidationError("source run target snapshot is invalid")
@@ -517,6 +647,8 @@ class RunService:
                 operation_spec=copy.deepcopy(source.operation_spec),
                 inventory_snapshot=copy.deepcopy(source.inventory_snapshot),
                 workspace_revision=source.workspace_revision,
+                playbook_id=source.playbook_id,
+                playbook_revision=source.playbook_revision,
                 credential_versions=copy.deepcopy(source.credential_versions),
                 timeout_seconds=source.timeout_seconds,
                 forks=source.forks,

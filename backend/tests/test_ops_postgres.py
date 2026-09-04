@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import stat
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -11,6 +12,7 @@ from uuid import uuid4
 import pytest
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
+from psycopg.errors import ObjectNotInPrerequisiteState
 
 from ops_composer.auth.service import AuthService
 from ops_composer.db.migration_engine import MigrationRunner
@@ -22,11 +24,21 @@ from ops_composer.domain.errors import (
     HostKeyConfirmationRequiredError,
     IdempotencyConflictError,
     NotFoundError,
+    PlaybookInvalidError,
+    PlaybookVersionConflictError,
     ValidationError,
 )
-from ops_composer.domain.ops import CommandMode, HostGroup, RunStatus, TargetKind
+from ops_composer.domain.ops import (
+    CommandMode,
+    HostGroup,
+    PlaybookReference,
+    PlaybookSource,
+    RunStatus,
+    TargetKind,
+)
 from ops_composer.services.assets import AssetService, CredentialService
 from ops_composer.services.crypto import CredentialCipher
+from ops_composer.services.playbooks import PlaybookService
 from ops_composer.services.runs import RunService, WorkerCoordinator
 from ops_composer.settings import Settings
 from ops_composer.uow.factory import UnitOfWorkFactory
@@ -445,6 +457,211 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
             assert all(
                 group.group_id != rolled_back.group_id for group in await assets.list_groups()
             )
+
+            playbooks = PlaybookService(factory, settings)
+            revision_one_content = (
+                "---\n- name: Database revision one\n  hosts: all\n"
+                "  gather_facts: false\n  tasks:\n"
+                "    - name: Ping\n      ansible.builtin.ping:\n"
+                "# sentinel-database-playbook-content\n"
+            )
+            database_playbook = await playbooks.create_database(
+                actor_user_id=administrator.user_id,
+                name="Database site",
+                description="integration database Playbook",
+                enabled=True,
+                content=revision_one_content,
+            )
+            with pytest.raises(ConflictError):
+                await playbooks.create_database(
+                    actor_user_id=administrator.user_id,
+                    name="database SITE",
+                    description="case-insensitive duplicate",
+                    enabled=True,
+                    content=revision_one_content,
+                )
+            with pytest.raises(PlaybookInvalidError):
+                await playbooks.create_database(
+                    actor_user_id=administrator.user_id,
+                    name="Invalid root",
+                    description="invalid",
+                    enabled=True,
+                    content="key: value\n",
+                )
+
+            revision_two_content = revision_one_content.replace(
+                "revision one", "revision two"
+            )
+            database_playbook = await playbooks.update_database(
+                database_playbook.playbook.playbook_id,
+                actor_user_id=administrator.user_id,
+                expected_version=database_playbook.playbook.version,
+                name=database_playbook.playbook.name,
+                description=database_playbook.playbook.description,
+                enabled=True,
+                content=revision_two_content,
+            )
+            with pytest.raises(PlaybookVersionConflictError):
+                await playbooks.update_database(
+                    database_playbook.playbook.playbook_id,
+                    actor_user_id=administrator.user_id,
+                    expected_version=1,
+                    name=database_playbook.playbook.name,
+                    description="stale update",
+                    enabled=True,
+                    content=revision_one_content,
+                )
+
+            pinned_run = await runs.create_playbook(
+                requested_by=administrator.user_id,
+                idempotency_key="postgres-database-playbook-run",
+                target_kind=TargetKind.HOSTS,
+                host_ids=(host.host_id,),
+                group_id=None,
+                playbook=PlaybookReference(
+                    source=PlaybookSource.DATABASE,
+                    playbook_id=database_playbook.playbook.playbook_id,
+                ),
+                extra_vars={"region": "test"},
+                tags=(),
+                skip_tags=(),
+                timeout_seconds=30,
+                forks=1,
+            )
+            assert pinned_run.playbook_revision == 2
+            assert pinned_run.workspace_revision == database_playbook.revision.sha256
+
+            revision_three = await playbooks.update_database(
+                database_playbook.playbook.playbook_id,
+                actor_user_id=administrator.user_id,
+                expected_version=database_playbook.playbook.version,
+                name=database_playbook.playbook.name,
+                description="changed after queueing",
+                enabled=False,
+                content=revision_one_content.replace("revision one", "revision three"),
+            )
+            await playbooks.delete_database(
+                revision_three.playbook.playbook_id,
+                actor_user_id=administrator.user_id,
+                expected_version=revision_three.playbook.version,
+            )
+            with pytest.raises(NotFoundError):
+                await playbooks.get_database(revision_three.playbook.playbook_id)
+
+            replayed_pinned_run = await runs.create_playbook(
+                requested_by=administrator.user_id,
+                idempotency_key="postgres-database-playbook-run",
+                target_kind=TargetKind.HOSTS,
+                host_ids=(host.host_id,),
+                group_id=None,
+                playbook=PlaybookReference(
+                    source=PlaybookSource.DATABASE,
+                    playbook_id=database_playbook.playbook.playbook_id,
+                ),
+                extra_vars={"region": "test"},
+                tags=(),
+                skip_tags=(),
+                timeout_seconds=30,
+                forks=1,
+            )
+            assert replayed_pinned_run.run_id == pinned_run.run_id
+
+            playbook_worker = WorkerCoordinator(factory, settings, "worker-playbook")
+            claimed_playbook = await playbook_worker.claim()
+            assert claimed_playbook is not None
+            assert claimed_playbook.run_id == pinned_run.run_id
+
+            def database_playbook_execution(
+                _executor,
+                _run,
+                *,
+                playbook_path,
+                playbook_project_dir,
+                event_handler,
+                **_kwargs,
+            ):
+                assert playbook_path.read_text(encoding="utf-8") == revision_two_content
+                assert stat.S_IMODE(playbook_path.stat().st_mode) == 0o600
+                assert stat.S_IMODE(playbook_project_dir.stat().st_mode) == 0o700
+                assert playbook_path.parent == playbook_project_dir
+                assert playbook_project_dir != settings.playbook_workspace
+                event_handler(
+                    {
+                        "event": "runner_on_ok",
+                        "stdout": "database Playbook finished",
+                        "event_data": {"host": host.name, "res": {"changed": False}},
+                    }
+                )
+                return 0, "successful"
+
+            monkeypatch.setattr(AnsibleExecutor, "run", database_playbook_execution)
+            await execute_run(
+                claimed_playbook,
+                factory=factory,
+                settings=settings,
+                coordinator=playbook_worker,
+            )
+            completed_playbook = await runs.get(pinned_run.run_id)
+            assert completed_playbook.status is RunStatus.SUCCEEDED
+            assert not (settings.runtime_dir / str(pinned_run.run_id)).exists()
+
+            retried_playbook = await runs.retry(
+                pinned_run.run_id,
+                requested_by=administrator.user_id,
+                idempotency_key="postgres-database-playbook-retry",
+            )
+            assert retried_playbook.playbook_id == pinned_run.playbook_id
+            assert retried_playbook.playbook_revision == pinned_run.playbook_revision
+            assert retried_playbook.workspace_revision == pinned_run.workspace_revision
+
+            async with pool.connection() as connection:
+                revision_count = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT count(*) AS count FROM playbook_revisions "
+                            "WHERE playbook_id = %(playbook_id)s"
+                        ),
+                        {"playbook_id": pinned_run.playbook_id},
+                    )
+                ).fetchone()
+                audit_payload = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT coalesce(string_agg(metadata::text, ''), '') AS payload "
+                            "FROM audit_events WHERE resource_id = %(resource_id)s"
+                        ),
+                        {"resource_id": str(pinned_run.playbook_id)},
+                    )
+                ).fetchone()
+            assert revision_count is not None and revision_count["count"] == 3
+            assert audit_payload is not None
+            assert "sentinel-database-playbook-content" not in audit_payload["payload"]
+            assert "sentinel-database-playbook-content" not in json.dumps(
+                [
+                    event.model_dump(mode="json")
+                    for event in await runs.events_after(pinned_run.run_id, 0)
+                ]
+            )
+            for mutation in (
+                sql.SQL(
+                    "UPDATE playbook_revisions SET content = %(content)s "
+                    "WHERE playbook_id = %(playbook_id)s AND revision = %(revision)s"
+                ),
+                sql.SQL(
+                    "DELETE FROM playbook_revisions WHERE playbook_id = %(playbook_id)s "
+                    "AND revision = %(revision)s"
+                ),
+            ):
+                with pytest.raises(ObjectNotInPrerequisiteState):
+                    async with pool.connection() as connection:
+                        await connection.execute(
+                            mutation,
+                            {
+                                "content": "---\n- hosts: all\n",
+                                "playbook_id": pinned_run.playbook_id,
+                                "revision": pinned_run.playbook_revision,
+                            },
+                        )
         finally:
             await pool.close()
     finally:

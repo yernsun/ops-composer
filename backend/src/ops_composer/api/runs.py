@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ops_composer.api.dependencies import UnitOfWorkFactoryDep
 from ops_composer.api.models import StrictApiModel
@@ -15,14 +15,14 @@ from ops_composer.auth.api import CurrentSessionDep, UnsafeSessionDep
 from ops_composer.domain.ops import (
     TERMINAL_RUN_STATUSES,
     CommandMode,
-    Playbook,
+    PlaybookReference,
+    PlaybookSource,
     Run,
     RunEvent,
     RunTarget,
     TargetKind,
 )
 from ops_composer.observability import bind_log_context
-from ops_composer.services.playbooks import PlaybookCatalog
 from ops_composer.services.runs import RunService
 from ops_composer.settings import get_settings
 
@@ -46,28 +46,52 @@ class CommandRunRequest(StrictApiModel):
     forks: int = Field(default=5, ge=1, le=20)
 
 
+class PlaybookReferenceRequest(StrictApiModel):
+    source: PlaybookSource
+    playbook_id: UUID | None = None
+    path: str | None = Field(default=None, min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def require_source_identifier(self) -> PlaybookReferenceRequest:
+        PlaybookReference.model_validate(self.model_dump())
+        return self
+
+    def to_domain(self) -> PlaybookReference:
+        return PlaybookReference.model_validate(self.model_dump())
+
+
 class PlaybookRunRequest(StrictApiModel):
     target: TargetRequest
-    playbook_path: str = Field(min_length=1, max_length=1024)
+    playbook: PlaybookReferenceRequest | None = None
+    playbook_path: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1024,
+        json_schema_extra={"deprecated": True},
+    )
     extra_vars: dict[str, object] = Field(default_factory=dict)
     tags: tuple[str, ...] = ()
     skip_tags: tuple[str, ...] = ()
     timeout_seconds: int = Field(default=1800, ge=1, le=86400)
     forks: int = Field(default=5, ge=1, le=20)
 
+    @model_validator(mode="after")
+    def require_one_playbook_reference(self) -> PlaybookRunRequest:
+        if (self.playbook is None) == (self.playbook_path is None):
+            raise ValueError("provide exactly one of playbook or playbookPath")
+        return self
+
+    def reference(self) -> PlaybookReference:
+        if self.playbook is not None:
+            return self.playbook.to_domain()
+        if self.playbook_path is None:
+            raise ValueError("playbook reference is missing")
+        return PlaybookReference(source=PlaybookSource.MOUNT, path=self.playbook_path)
+
 
 class RunDetailResponse(StrictApiModel):
     run: Run
     targets: tuple[RunTarget, ...]
-
-
-class PlaybookValidationRequest(StrictApiModel):
-    path: str
-
-
-class PlaybookValidationResponse(StrictApiModel):
-    valid: bool
-    output: str
 
 
 class OverviewResponse(StrictApiModel):
@@ -80,7 +104,7 @@ class OverviewResponse(StrictApiModel):
 
 def _service(factory: UnitOfWorkFactoryDep) -> RunService:
     settings = get_settings()
-    return RunService(factory, settings, PlaybookCatalog(settings.playbook_workspace))
+    return RunService(factory, settings)
 
 
 @router.get("/overview", operation_id="getOverview")
@@ -154,7 +178,7 @@ async def create_playbook_run(
         target_kind=request.target.kind,
         host_ids=request.target.host_ids,
         group_id=request.target.group_id,
-        playbook_path=request.playbook_path,
+        playbook=request.reference(),
         extra_vars=request.extra_vars,
         tags=request.tags,
         skip_tags=request.skip_tags,
@@ -277,23 +301,3 @@ async def stream_run_events(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@router.get("/playbooks", operation_id="listPlaybooks")
-async def list_playbooks(_: CurrentSessionDep) -> tuple[Playbook, ...]:
-    return await PlaybookCatalog(get_settings().playbook_workspace).list()
-
-
-@router.get("/playbooks/detail", operation_id="getPlaybook")
-async def get_playbook(path: str, _: CurrentSessionDep) -> Playbook:
-    return await PlaybookCatalog(get_settings().playbook_workspace).get(path)
-
-
-@router.post("/playbooks/validate", operation_id="validatePlaybook")
-async def validate_playbook(
-    request: PlaybookValidationRequest, _: UnsafeSessionDep
-) -> PlaybookValidationResponse:
-    valid, output = await PlaybookCatalog(get_settings().playbook_workspace).syntax_check(
-        request.path
-    )
-    return PlaybookValidationResponse(valid=valid, output=output)

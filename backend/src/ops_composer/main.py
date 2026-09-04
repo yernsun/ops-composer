@@ -15,6 +15,7 @@ from ops_composer.api.assets import router as assets_router
 from ops_composer.api.errors import install_error_handlers
 from ops_composer.api.health import router as health_router
 from ops_composer.api.observability import RequestContextMiddleware, configure_logging
+from ops_composer.api.playbooks import router as playbooks_router
 from ops_composer.api.runs import router as runs_router
 from ops_composer.api.system import router as system_router
 from ops_composer.auth.api import router as auth_router
@@ -180,6 +181,7 @@ def create_app() -> FastAPI:
     application.include_router(health_router)
     application.include_router(auth_router)
     application.include_router(assets_router)
+    application.include_router(playbooks_router)
     application.include_router(runs_router)
     application.include_router(system_router)
     install_error_handlers(application)

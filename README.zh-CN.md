@@ -25,8 +25,8 @@ Psycopg 3 async pool、Ansible Runner、Argon2id 和 AES-256-GCM。
 - 单管理员登录；管理员只能通过交互式 CLI 初始化，无注册或 Workspace API。
 - Host、Group、PASSWORD Credential 与不可变 Credential Revision。
 - SSH Host Key 扫描、指纹确认和每次 Run 的临时 `known_hosts`。
-- Ping、Command、需二次确认的 Shell，以及受 Workspace 边界约束的 Playbook。
-- 创建 Run 时固化目标、Inventory、Credential 版本和 Playbook 哈希；重试创建带
+- Ping、Command、需二次确认的 Shell，以及数据库或只读挂载来源的 Playbook。
+- 创建 Run 时固化目标、Inventory、Credential 版本及 Playbook revision/哈希；重试创建带
   `sourceRunId` 的新 Run。
 - PostgreSQL `FOR UPDATE SKIP LOCKED` 队列、Lease 失联恢复和按 Host 串行锁。
 - 持久化 RunEvent、可按 sequence 回放的 SSE、取消、超时、输出截断和秘密脱敏。
@@ -75,7 +75,17 @@ docker compose run --rm api ops-composer audit purge --execute   # 按保留期�
 导出文件权限固定为 `0600`，默认拒绝覆盖；需要覆盖时显式传入 `--force`。请将导出文件放在
 仓库和共享目录之外。
 
-Playbook 默认从根目录 `playbooks/` 只读挂载。不得挂载 Docker Socket。
+## Playbook 来源
+
+`OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` 支持 `database`、`mount` 和默认的 `both`。数据库
+Playbook 可在 Web 创建、校验、编辑、启停和软删除；每次成功保存产生不可变 revision，Run
+始终固定创建时的 revision，因此排队或历史 Run 不受后续编辑、停用和删除影响。数据库
+Playbook 是隔离的单 YAML 项目，不能隐式读取挂载目录中的 roles、templates、files 或 vars。
+
+挂载来源始终只读，仅发现 `playbooks/**/*.yml(yaml)`，拒绝绝对路径、`..` 和越界软链接。
+`both` 模式缺少挂载目录时，System Doctor 标记为降级，但数据库来源仍可使用。同名 Playbook
+按“来源 + 引用”并存，不会覆盖。Playbook YAML 属于可信代码，以明文保存在 PostgreSQL，
+不得写入 Credential 或部署 Secret。不得挂载 Docker Socket。
 
 ## 开发环境
 
@@ -157,7 +167,7 @@ HARNESS_DOCKER=1 python3 harness/check.py
 - Credential 明文只在 Worker 内存和权限为 `0600` 的执行期文件中短暂存在；Run 目录为
   `0700`，成功、失败和重启恢复均清理。
 - Host/Group variables 禁止覆盖 `ansible_password` 等敏感或控制性字段。
-- Playbook 仅允许 Workspace 下的 YAML 文件，执行前验证路径、语法和创建时内容哈希。
+- 挂载 Playbook 验证 Workspace 边界和创建时哈希；数据库 Playbook 执行不可变固定 revision。
 
 架构约束导航见 [docs/README.md](docs/README.md)，Project Forge 更新前请先阅读
 [AGENTS.md](AGENTS.md)。

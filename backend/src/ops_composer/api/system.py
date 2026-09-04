@@ -25,6 +25,7 @@ async def system_info(_: CurrentSessionDep) -> dict[str, object]:
         "projectForgeCommit": PROJECT_FORGE_COMMIT,
         "projectForgeTemplateDigest": PROJECT_FORGE_TEMPLATE_DIGEST,
         "playbookWorkspace": str(settings.playbook_workspace),
+        "playbookSourceMode": settings.playbook_source_mode.value,
     }
 
 

@@ -17,13 +17,36 @@ class SystemService:
                 database_ok = await unit_of_work.health.is_ready()
         except Exception:
             database_ok = False
+        mode = self._settings.playbook_source_mode
+        mount_enabled = mode.mount_enabled
         workspace = Path(self._settings.playbook_workspace)
+        mount_directory = workspace / "playbooks"
+        mount_ok = mount_directory.is_dir() if mount_enabled else None
         return {
             "database": {"ok": database_ok},
             "playbookWorkspace": {
-                "ok": workspace.is_dir(),
+                "enabled": mount_enabled,
+                "checked": mount_enabled,
+                "ok": mount_ok,
+                "degraded": bool(
+                    mode.database_enabled and mount_enabled and not mount_ok
+                ),
                 "readOnlyExpected": True,
                 "path": str(workspace),
+                "playbookDirectory": str(mount_directory),
+            },
+            "playbookSources": {
+                "mode": mode.value,
+                "database": {
+                    "enabled": mode.database_enabled,
+                    "writable": mode.database_enabled,
+                    "ok": database_ok if mode.database_enabled else None,
+                },
+                "mount": {
+                    "enabled": mount_enabled,
+                    "readOnly": True,
+                    "ok": mount_ok,
+                },
             },
             "middlewareDependencies": [],
         }

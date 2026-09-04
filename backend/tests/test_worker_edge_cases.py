@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event
@@ -18,6 +20,8 @@ from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import HostKeyConfirmationRequiredError, NotFoundError
 from ops_composer.domain.ops import (
     HostKey,
+    PlaybookRevision,
+    PlaybookSource,
     ResolvedHost,
     Run,
     RunKind,
@@ -452,6 +456,125 @@ async def test_execute_run_handles_preparation_and_cancellation(
     )
     assert cancel_coordinator.finished[-1]["status"] is RunStatus.CANCELED
     assert cancel_coordinator.targets[-1]["status"] is RunTargetStatus.CANCELED
+
+
+@pytest.mark.asyncio
+async def test_database_playbook_worker_uses_pinned_revision_in_private_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host = _host()
+    content = (
+        "---\n- name: Pinned\n  hosts: all\n  gather_facts: false\n"
+        "  tasks: []\n# worker-playbook-sentinel\n"
+    )
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    playbook_id = uuid4()
+    base_run = _run(
+        (host,),
+        kind=RunKind.PLAYBOOK,
+        operation={
+            "playbook": {
+                "source": PlaybookSource.DATABASE.value,
+                "playbookId": str(playbook_id),
+                "revision": 4,
+                "sha256": digest,
+            },
+            "extraVars": {},
+            "tags": [],
+            "skipTags": [],
+        },
+        workspace_revision=digest,
+    )
+    run = base_run.model_copy(
+        update={"playbook_id": playbook_id, "playbook_revision": 4}
+    )
+    target = _target(run, host)
+    await _install_execution_fakes(monkeypatch, run, (target,))
+    revision = PlaybookRevision(
+        playbook_id=playbook_id,
+        revision=4,
+        content=content,
+        sha256=digest,
+        size_bytes=len(content.encode()),
+        validator_version="ansible-core test",
+        validated_at=utc_now(),
+        created_by=uuid4(),
+        created_at=utc_now(),
+    )
+
+    class _Playbooks:
+        async def get_revision(
+            self, requested_id: UUID, requested_revision: int
+        ) -> PlaybookRevision | None:
+            assert (requested_id, requested_revision) == (playbook_id, 4)
+            return revision
+
+    class _Unit:
+        playbooks = _Playbooks()
+
+    class _Context:
+        async def __aenter__(self) -> _Unit:
+            return _Unit()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _Factory:
+        def __call__(self) -> _Context:
+            return _Context()
+
+    observed: dict[str, object] = {}
+
+    def execute_database_playbook(
+        _executor: AnsibleExecutor,
+        _run: Run,
+        *,
+        playbook_path: Path,
+        playbook_project_dir: Path,
+        **_kwargs: object,
+    ) -> tuple[int, str]:
+        observed["content"] = playbook_path.read_text(encoding="utf-8")
+        observed["file_mode"] = stat.S_IMODE(playbook_path.stat().st_mode)
+        observed["directory_mode"] = stat.S_IMODE(playbook_project_dir.stat().st_mode)
+        observed["isolated"] = playbook_project_dir == playbook_path.parent
+        return 0, "successful"
+
+    monkeypatch.setattr(AnsibleExecutor, "run", execute_database_playbook)
+    coordinator = _Coordinator()
+    settings = Settings(
+        playbook_source_mode="mount",
+        playbook_workspace=tmp_path / "must-not-be-read",
+        runtime_dir=tmp_path / "runtime-database",
+        master_key=_master_key(),
+    )
+    await execute_run(
+        run,
+        factory=cast(Any, _Factory()),
+        settings=settings,
+        coordinator=cast(Any, coordinator),
+    )
+
+    assert observed == {
+        "content": content,
+        "file_mode": 0o600,
+        "directory_mode": 0o700,
+        "isolated": True,
+    }
+    assert coordinator.finished[-1]["status"] is RunStatus.SUCCEEDED
+    assert not (settings.runtime_dir / str(run.run_id)).exists()
+    assert "worker-playbook-sentinel" not in str(coordinator.events)
+
+    tampered = run.model_copy(update={"workspace_revision": "0" * 64})
+    await _install_execution_fakes(monkeypatch, tampered, (_target(tampered, host),))
+    rejected = _Coordinator()
+    await execute_run(
+        tampered,
+        factory=cast(Any, _Factory()),
+        settings=settings,
+        coordinator=cast(Any, rejected),
+    )
+    assert rejected.finished[-1]["status"] is RunStatus.REJECTED
 
 @pytest.mark.asyncio
 async def test_audit_retention_worker_handles_batches_busy_lock_and_failure(

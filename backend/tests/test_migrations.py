@@ -18,6 +18,7 @@ from ops_composer.db.migrations.auth import AUTH
 from ops_composer.db.migrations.auth_security import AUTH_SECURITY
 from ops_composer.db.migrations.core import CORE
 from ops_composer.db.migrations.ops_composer import OPS_COMPOSER
+from ops_composer.db.migrations.playbooks import PLAYBOOKS
 from ops_composer.db.types import DbConnection
 from ops_composer.repositories.base import RepositoryConnection
 from ops_composer.repositories.health import PostgresHealthRepository
@@ -192,13 +193,14 @@ async def test_readiness_repository_requires_exact_current_checksums() -> None:
 
 
 def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
-    result = ordered_migrations((AUDIT, OPS_COMPOSER, AUTH_SECURITY, AUTH, CORE))
+    result = ordered_migrations((PLAYBOOKS, AUDIT, OPS_COMPOSER, AUTH_SECURITY, AUTH, CORE))
     assert [entry.migration_id for entry in result] == [
         "0001_core",
         "0020_auth",
         "0021_auth_security",
         "0030_ops_composer",
         "0040_audit_events",
+        "0050_playbooks",
     ]
     schema_sql = OPS_COMPOSER.up_sql.lower()
     assert "jsonb" in schema_sql
@@ -213,3 +215,10 @@ def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
     assert "jsonb" in audit_sql
     assert "foreign key" not in audit_sql
     assert "audit_events_reject_update" in audit_sql
+
+    playbook_sql = PLAYBOOKS.up_sql.lower()
+    assert "create table playbooks" in playbook_sql
+    assert "create table playbook_revisions" in playbook_sql
+    assert "deferrable initially deferred" in playbook_sql
+    assert "playbook_revision" in playbook_sql
+    assert "on delete restrict" in playbook_sql

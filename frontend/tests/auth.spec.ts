@@ -131,7 +131,9 @@ describe('session API client', () => {
       api.cancelRun('run-1'),
       api.retryRun('run-1'),
       api.playbooks(),
-      api.validatePlaybook('playbooks/site.yml'),
+      api.validatePlaybook({
+        playbook: { source: 'MOUNT', path: 'playbooks/site.yml' },
+      }),
       api.systemInfo(),
       api.systemDoctor(),
     ])

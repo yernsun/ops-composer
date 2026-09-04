@@ -27,8 +27,18 @@ from ops_composer.domain.audit import (
     AuditSeverity,
     AuditSource,
 )
-from ops_composer.domain.errors import HostKeyConfirmationRequiredError, OpsError
-from ops_composer.domain.ops import Run, RunStatus, RunTarget, RunTargetStatus
+from ops_composer.domain.errors import (
+    HostKeyConfirmationRequiredError,
+    OpsError,
+    PlaybookNotFoundError,
+)
+from ops_composer.domain.ops import (
+    PlaybookSource,
+    Run,
+    RunStatus,
+    RunTarget,
+    RunTargetStatus,
+)
 from ops_composer.observability import (
     configure_logging,
     log_context,
@@ -140,6 +150,8 @@ class AnsibleExecutor:
         *,
         inventory_path: Path,
         runtime_path: Path,
+        playbook_path: Path | None = None,
+        playbook_project_dir: Path | None = None,
         cancel: Event,
         event_handler: Callable[[dict[str, Any]], bool],
     ) -> tuple[int | None, str]:
@@ -167,17 +179,23 @@ class AnsibleExecutor:
         }
         if run.kind.value == "PLAYBOOK":
             operation = run.operation_spec
-            playbook = PlaybookCatalog(self._settings.playbook_workspace).resolve(
-                str(operation["playbookPath"])
-            )
+            if playbook_path is None:
+                legacy_path = operation.get("playbookPath")
+                if legacy_path is None:
+                    raise ValueError("resolved Playbook path is required")
+                playbook_path = PlaybookCatalog(self._settings.playbook_workspace).resolve(
+                    str(legacy_path)
+                )
+            if playbook_project_dir is None:
+                playbook_project_dir = self._settings.playbook_workspace
             raw_tags = operation.get("tags", [])
             raw_skip_tags = operation.get("skipTags", [])
             tags = raw_tags if isinstance(raw_tags, list) else []
             skip_tags = raw_skip_tags if isinstance(raw_skip_tags, list) else []
             common.update(
                 {
-                    "project_dir": str(self._settings.playbook_workspace),
-                    "playbook": str(playbook),
+                    "project_dir": str(playbook_project_dir),
+                    "playbook": str(playbook_path),
                     "extravars": operation.get("extraVars", {}),
                     "tags": ",".join(str(item) for item in tags),
                     "skip_tags": ",".join(str(item) for item in skip_tags),
@@ -283,13 +301,40 @@ async def execute_run(
     )
     assets = AssetService(factory)
     audit_service = AuditService(factory)
+    mounted_playbook_path: Path | None = None
+    database_playbook_content: str | None = None
     try:
         _, targets = await run_service.detail(run.run_id)
         if run.kind.value == "PLAYBOOK":
-            path = str(run.operation_spec["playbookPath"])
-            playbook = await PlaybookCatalog(settings.playbook_workspace).get(path)
-            if playbook.sha256 != run.workspace_revision:
-                raise ValueError("playbook content changed after this run was created")
+            raw_reference = run.operation_spec.get("playbook")
+            reference = raw_reference if isinstance(raw_reference, dict) else {}
+            raw_source = reference.get("source")
+            source = (
+                PlaybookSource(str(raw_source))
+                if raw_source is not None
+                else PlaybookSource.MOUNT
+            )
+            if source is PlaybookSource.DATABASE:
+                if run.playbook_id is None or run.playbook_revision is None:
+                    raise PlaybookNotFoundError("database Playbook revision is missing")
+                async with factory() as unit_of_work:
+                    revision = await unit_of_work.playbooks.get_revision(
+                        run.playbook_id, run.playbook_revision
+                    )
+                if revision is None:
+                    raise PlaybookNotFoundError("database Playbook revision was not found")
+                if revision.sha256 != run.workspace_revision:
+                    raise ValueError("database Playbook revision hash does not match the Run")
+                database_playbook_content = revision.content
+            else:
+                raw_path = reference.get("path") or run.operation_spec.get("playbookPath")
+                if raw_path is None:
+                    raise PlaybookNotFoundError("mounted Playbook path is missing")
+                path = str(raw_path)
+                playbook = await PlaybookCatalog(settings.playbook_workspace).get(path)
+                if playbook.sha256 != run.workspace_revision:
+                    raise ValueError("playbook content changed after this run was created")
+                mounted_playbook_path = PlaybookCatalog(settings.playbook_workspace).resolve(path)
         inventory, secret_values = await _runtime_inventory(run, credentials)
         known_hosts = await _known_hosts(run, assets)
     except (OpsError, ValueError, KeyError) as error:
@@ -386,6 +431,15 @@ async def execute_run(
                 yaml.safe_dump(inventory, allow_unicode=True, sort_keys=True),
             )
             runtime.write("known_hosts", known_hosts)
+            execution_playbook_path = mounted_playbook_path
+            execution_project_dir = (
+                settings.playbook_workspace if mounted_playbook_path is not None else None
+            )
+            if database_playbook_content is not None:
+                execution_playbook_path = runtime.write(
+                    "project/playbook.yml", database_playbook_content
+                )
+                execution_project_dir = runtime.path / "project"
             await coordinator.mark_running(run.run_id)
             await coordinator.append_event(run.run_id, event_type="run_started")
             execution = asyncio.create_task(
@@ -394,6 +448,8 @@ async def execute_run(
                     run,
                     inventory_path=inventory_path,
                     runtime_path=runtime.path,
+                    playbook_path=execution_playbook_path,
+                    playbook_project_dir=execution_project_dir,
                     cancel=cancel,
                     event_handler=event_handler,
                 )
