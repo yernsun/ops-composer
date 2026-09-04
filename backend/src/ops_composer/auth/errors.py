@@ -11,6 +11,8 @@ class AuthError(Exception):
     def __init__(self, *, retry_after_seconds: int | None = None) -> None:
         super().__init__(self.public_message)
         self.retry_after_seconds = retry_after_seconds
+        self.audit_recorded = False
+        self.audit_metadata: dict[str, object] = {}
 
 
 class AuthenticationRequiredError(AuthError):

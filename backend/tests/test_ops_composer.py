@@ -19,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
 import ops_composer.api.runs as runs_api
+from ops_composer.domain.audit import AuditEventDraft
 from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     HostKeyChangedError,
@@ -297,10 +298,20 @@ class _RunsRepository:
         return self.run_targets.get(run_id, ())
 
 
+class _AuditRepository:
+    def __init__(self) -> None:
+        self.events: list[AuditEventDraft] = []
+
+    async def append(self, event: AuditEventDraft) -> AuditEventDraft:
+        self.events.append(event)
+        return event
+
+
 class _Unit:
     def __init__(self, assets: _AssetsRepository, runs: _RunsRepository) -> None:
         self.assets = assets
         self.runs = runs
+        self.audit = _AuditRepository()
 
 
 class _UnitContext:

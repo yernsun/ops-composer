@@ -10,7 +10,7 @@ import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
-import { reactive, ref } from 'vue'
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
@@ -23,7 +23,7 @@ const router = useRouter()
 const toast = useToast()
 const executeVisible = ref(false)
 const selected = ref<PlaybookDto | null>(null)
-const target = reactive<TargetValue>({ kind: 'ALL', hostIds: [], groupId: null })
+const target = ref<TargetValue>({ kind: 'ALL', hostIds: [], groupId: null })
 const extraVarsText = ref('{}')
 const tagsText = ref('')
 const skipTagsText = ref('')
@@ -53,9 +53,9 @@ const executeMutation = useMutation({
       value.split(',').map((item) => item.trim()).filter(Boolean)
     return api.createPlaybookRun({
       target: {
-        kind: target.kind,
-        hostIds: target.hostIds,
-        groupId: target.groupId,
+        kind: target.value.kind,
+        hostIds: target.value.hostIds,
+        groupId: target.value.groupId,
       },
       playbookPath: selected.value.path,
       extraVars,

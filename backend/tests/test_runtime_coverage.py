@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import stat
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI, HTTPException, Response
@@ -14,7 +18,18 @@ import ops_composer.cli as cli_module
 import ops_composer.main as main_module
 from ops_composer.api.dependencies import get_unit_of_work_factory, prevent_auth_caching
 from ops_composer.api.health import readiness
+from ops_composer.auth.errors import AdminAlreadyExistsError
 from ops_composer.db.migration_engine import MigrationState, MigrationStatus
+from ops_composer.domain.audit import (
+    AuditAction,
+    AuditEvent,
+    AuditEventDraft,
+    AuditOutcome,
+    AuditQuery,
+    AuditSeverity,
+    AuditSource,
+)
+from ops_composer.domain.base import utc_now
 from ops_composer.settings import Settings
 from ops_composer.uow.factory import UnitOfWorkFactory
 
@@ -249,3 +264,349 @@ def test_auth_purge_cli_executes_dry_run_and_delete_paths(
     assert "purged sessions=2 rate_limits=3" in delete_result.stdout
     assert dry_runs == [True, False]
     assert all(pool.opened and pool.closed for pool in pools)
+
+
+class _AuditService:
+    def __init__(self) -> None:
+        now = utc_now()
+        self.events = (
+            AuditEvent(
+                audit_event_id=2,
+                occurred_at=now,
+                severity=AuditSeverity.WARNING,
+                source=AuditSource.WORKER,
+                service="worker",
+                event_action=AuditAction.RUN_FAILED,
+                event_outcome=AuditOutcome.FAILED,
+                run_id=uuid4(),
+                resource_type="run",
+                resource_id="run-2",
+                error_code="RUNNER_ERROR",
+                metadata={"target_count": 2},
+            ),
+            AuditEvent(
+                audit_event_id=1,
+                occurred_at=now - timedelta(minutes=1),
+                severity=AuditSeverity.INFO,
+                source=AuditSource.API,
+                service="api",
+                event_action=AuditAction.RUN_CREATED,
+                event_outcome=AuditOutcome.SUCCEEDED,
+                resource_type="run",
+                resource_id="run-1",
+            ),
+        )
+        self.queries: list[AuditQuery] = []
+        self.recorded: list[AuditEventDraft] = []
+        self.purge_calls = 0
+
+    async def list(self, query: AuditQuery) -> tuple[AuditEvent, ...]:
+        self.queries.append(query)
+        return self.events if query.before_id is None else ()
+
+    async def count_before(self, _cutoff: datetime) -> int:
+        return 3
+
+    async def purge_before(self, _cutoff: datetime) -> tuple[bool, int]:
+        self.purge_calls += 1
+        return (True, 3) if self.purge_calls == 1 else (True, 0)
+
+    async def record_best_effort(self, event: AuditEventDraft) -> None:
+        self.recorded.append(event)
+
+
+def test_audit_cli_lists_exports_and_purges_with_safe_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = _AuditService()
+
+    @asynccontextmanager
+    async def audit_runtime() -> AsyncIterator[tuple[_AuditService, Settings]]:
+        yield service, Settings(audit_retention_days=180)
+
+    monkeypatch.setattr(cli_module, "_audit_runtime", audit_runtime)
+    command = CliRunner()
+    since = "2026-09-01T00:00:00Z"
+    until = "2026-09-05T00:00:00+00:00"
+
+    listed = command.invoke(
+        cli_module.app,
+        [
+            "audit",
+            "list",
+            "--since",
+            since,
+            "--until",
+            until,
+            "--action",
+            "run_failed",
+            "--outcome",
+            "failed",
+            "--source",
+            "worker",
+            "--run-id",
+            str(service.events[0].run_id),
+            "--actor-user-id",
+            str(uuid4()),
+            "--resource-type",
+            "run",
+            "--resource-id",
+            "run-2",
+            "--error-code",
+            "RUNNER_ERROR",
+            "--before-id",
+            "20",
+            "--limit",
+            "50",
+            "--jsonl",
+        ],
+    )
+    assert listed.exit_code == 0
+    assert listed.stdout == ""
+    query = service.queries[-1]
+    assert query.action is AuditAction.RUN_FAILED
+    assert query.outcome is AuditOutcome.FAILED
+    assert query.source is AuditSource.WORKER
+    assert query.before_id == 20
+
+    table = command.invoke(cli_module.app, ["audit", "list"])
+    assert table.exit_code == 0
+    assert "occurred_at" in table.stdout
+    assert "RUN_FAILED" in table.stdout
+    assert "run:run-2" in table.stdout
+    jsonl = command.invoke(cli_module.app, ["audit", "list", "--jsonl"])
+    assert jsonl.exit_code == 0
+    assert json.loads(jsonl.stdout.splitlines()[0])["event_action"] == "RUN_FAILED"
+
+    destination = tmp_path / "audit.jsonl"
+    exported = command.invoke(
+        cli_module.app,
+        [
+            "audit",
+            "export",
+            "--since",
+            since,
+            "--until",
+            until,
+            "--output",
+            str(destination),
+        ],
+    )
+    assert exported.exit_code == 0
+    assert "exported=2" in exported.stdout
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+    lines = destination.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["event_action"] == "RUN_FAILED"
+    refused = command.invoke(
+        cli_module.app,
+        [
+            "audit",
+            "export",
+            "--since",
+            since,
+            "--until",
+            until,
+            "--output",
+            str(destination),
+        ],
+    )
+    assert refused.exit_code == 2
+    forced = command.invoke(
+        cli_module.app,
+        [
+            "audit",
+            "export",
+            "--since",
+            since,
+            "--until",
+            until,
+            "--output",
+            str(destination),
+            "--force",
+        ],
+    )
+    assert forced.exit_code == 0
+    assert any(event.event_action is AuditAction.AUDIT_EXPORTED for event in service.recorded)
+
+    dry_run = command.invoke(
+        cli_module.app,
+        ["audit", "purge", "--before", "2026-09-01T00:00:00Z"],
+    )
+    assert dry_run.exit_code == 0
+    assert "would_purge=3" in dry_run.stdout
+    executed = command.invoke(
+        cli_module.app,
+        ["audit", "purge", "--before", "2026-09-01T00:00:00Z", "--execute"],
+    )
+    assert executed.exit_code == 0
+    assert "purged=3" in executed.stdout
+    assert any(
+        event.event_action is AuditAction.AUDIT_RETENTION_PURGED
+        for event in service.recorded
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["audit", "list", "--since", "not-a-timestamp"],
+        ["audit", "list", "--since", "2026-09-01T00:00:00"],
+        ["audit", "list", "--action", "unknown"],
+        ["audit", "list", "--outcome", "unknown"],
+        ["audit", "list", "--source", "unknown"],
+    ],
+)
+def test_audit_cli_rejects_unsafe_filters(arguments: list[str]) -> None:
+    result = CliRunner().invoke(cli_module.app, arguments)
+    assert result.exit_code != 0
+
+
+def test_cli_startup_migration_failures_and_admin_bootstrap_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured: list[dict[str, object]] = []
+
+    def configured_logging(**values: object) -> None:
+        configured.append(values)
+
+    monkeypatch.setattr(cli_module, "configure_logging", configured_logging)
+    monkeypatch.setattr(cli_module, "bind_log_context", lambda **_values: None)
+    monkeypatch.setattr(cli_module, "get_settings", lambda: Settings(log_level="WARNING"))
+    cli_module._configure_logging("migration")
+    assert configured[-1]["service"] == "migration"
+    assert configured[-1]["level"] == "WARNING"
+
+    def invalid_settings() -> Settings:
+        return Settings(app_env="production")
+
+    monkeypatch.setattr(cli_module, "get_settings", invalid_settings)
+    cli_module._configure_logging()
+    assert configured[-1] == {"service": "cli"}
+
+    runner = _MigrationRunner()
+
+    @asynccontextmanager
+    async def fake_runner() -> AsyncIterator[_MigrationRunner]:
+        yield runner
+
+    monkeypatch.setattr(cli_module, "_runner", fake_runner)
+    command = CliRunner()
+
+    async def invalid_history() -> None:
+        raise RuntimeError("migration validation failed")
+
+    runner.validate = invalid_history  # type: ignore[method-assign]
+    assert command.invoke(cli_module.app, ["migrate", "validate"]).exit_code == 1
+
+    async def failed_apply() -> tuple[str, ...]:
+        raise RuntimeError("migration apply failed")
+
+    runner.up = failed_apply  # type: ignore[method-assign]
+    assert command.invoke(cli_module.app, ["migrate", "up"]).exit_code == 1
+
+    pools: list[_ServicePool] = []
+
+    def create_service_pool(_database_url: str) -> _ServicePool:
+        pool = _ServicePool()
+        pools.append(pool)
+        return pool
+
+    bootstrap_mode = {"value": "success"}
+
+    class _AuthService:
+        def __init__(self, _factory: UnitOfWorkFactory, _settings: Settings) -> None:
+            pass
+
+        async def bootstrap(self, username: str, _password: str) -> object:
+            if bootstrap_mode["value"] == "exists":
+                raise AdminAlreadyExistsError()
+            if bootstrap_mode["value"] == "invalid":
+                raise ValueError("password is invalid")
+            return type("Identity", (), {"username": username})()
+
+    monkeypatch.setattr(cli_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(cli_module, "create_pool", create_service_pool)
+    monkeypatch.setattr(cli_module, "AuthService", _AuthService)
+
+    success = command.invoke(
+        cli_module.app,
+        ["admin", "bootstrap", "--username", "operator"],
+        input="long-enough-password\nlong-enough-password\n",
+    )
+    assert success.exit_code == 0
+    assert "administrator 'operator' created" in success.stdout
+
+    bootstrap_mode["value"] = "exists"
+    exists = command.invoke(
+        cli_module.app,
+        ["admin", "bootstrap"],
+        input="long-enough-password\nlong-enough-password\n",
+    )
+    assert exists.exit_code == 1
+    assert "already been bootstrapped" in exists.stderr
+
+    bootstrap_mode["value"] = "invalid"
+    invalid = command.invoke(
+        cli_module.app,
+        ["admin", "bootstrap"],
+        input="long-enough-password\nlong-enough-password\n",
+    )
+    assert invalid.exit_code == 2
+    assert "password is invalid" in invalid.stderr
+    assert all(pool.opened and pool.closed for pool in pools)
+
+
+def test_audit_cli_rejects_bad_export_targets_and_reports_busy_purge(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = _AuditService()
+
+    async def busy_purge(_cutoff: datetime) -> tuple[bool, int]:
+        return False, 0
+
+    service.purge_before = busy_purge  # type: ignore[method-assign]
+
+    @asynccontextmanager
+    async def audit_runtime() -> AsyncIterator[tuple[_AuditService, Settings]]:
+        yield service, Settings()
+
+    monkeypatch.setattr(cli_module, "_audit_runtime", audit_runtime)
+    command = CliRunner()
+    options = [
+        "audit",
+        "export",
+        "--since",
+        "2026-09-01T00:00:00Z",
+        "--until",
+        "2026-09-02T00:00:00Z",
+        "--output",
+    ]
+    missing_parent = command.invoke(
+        cli_module.app,
+        [*options, str(tmp_path / "missing" / "audit.jsonl")],
+    )
+    assert missing_parent.exit_code == 2
+    directory_target = tmp_path / "directory"
+    directory_target.mkdir()
+    invalid_target = command.invoke(
+        cli_module.app,
+        [*options, str(directory_target), "--force"],
+    )
+    assert invalid_target.exit_code == 2
+    busy = command.invoke(cli_module.app, ["audit", "purge", "--execute"])
+    assert busy.exit_code == 0
+    assert "lock=busy" in busy.stdout
+
+
+def test_worker_cli_handles_operator_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def interrupted(_settings: Settings) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_module, "run_worker", interrupted)
+    monkeypatch.setattr(cli_module, "get_settings", lambda: Settings())
+    result = CliRunner().invoke(cli_module.app, ["worker"])
+    assert result.exit_code == 0
+    assert "worker stopped" in result.stdout

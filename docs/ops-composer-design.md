@@ -1384,6 +1384,7 @@ Worker Lease
 Host Lock
 Run Event / SSE 回放
 认证 Session 与限流
+业务审计与保留期清理
 ```
 
 项目不使用 ORM，直接采用 Psycopg 3、显式 SQL、Migration 和 Repository。
@@ -1601,6 +1602,38 @@ version
 checksum
 applied_at
 ```
+
+## 13.13 audit_events
+
+```text
+audit_event_id (identity)
+occurred_at (timestamptz)
+schema_version
+severity
+source
+service
+event_action
+event_outcome
+request_id
+correlation_id
+actor_user_id
+session_id
+run_id
+run_target_id
+worker_id
+resource_type
+resource_id
+duration_ms
+error_code
+exception_type
+failure_stage
+retryable
+metadata (jsonb)
+```
+
+`0040_audit_events` 是 forward-only checksum migration。资源 ID 不设置外键，以便业务对象
+删除后仍保留历史；数据库触发器拒绝 `UPDATE`，仅保留期任务可以分批 `DELETE`。时间、动作、
+Run、管理员和资源均有查询索引。
 
 ---
 
@@ -2236,33 +2269,45 @@ URL encoded 变体替换
 
 ## 20. 日志规范
 
+运行时采用两层日志：stdout 单行 JSON 用于实时排障，PostgreSQL `audit_events` 用于持久化
+业务审计。不依赖 Redis、ELK、Loki 或 Sentry。API、Worker、CLI、Migration 和 Uvicorn 使用
+同一字段命名；Uvicorn 默认 access log 关闭，避免重复记录。
+
 结构化日志示例：
 
 ```json
 {
+  "timestamp": "2026-09-04T00:00:00+00:00",
   "level": "INFO",
-  "message": "operation run started",
-  "eventAction": "OPERATION_RUN_STARTED",
-  "eventOutcome": "SUCCESS",
-  "runId": "...",
-  "workerId": "...",
-  "operationKind": "COMMAND",
-  "targetCount": 5,
-  "durationMs": 0
+  "service": "worker",
+  "environment": "production",
+  "message": "run started",
+  "source": "WORKER",
+  "event_action": "RUN_STARTED",
+  "event_outcome": "SUCCEEDED",
+  "request_id": null,
+  "correlation_id": "...",
+  "run_id": "...",
+  "worker_id": "...",
+  "duration_ms": 0,
+  "metadata": {"operation_kind": "COMMAND", "target_count": 5}
 }
 ```
 
-Host 事件：
+固定字段包含请求/关联 ID、管理员与 Session、Run/RunTarget、Host/Group/Credential、Worker、
+耗时、安全错误码、失败阶段、可重试标记和受控 metadata。ContextVar 在请求与任务边界绑定并
+可靠复位，防止并发串号。健康检查成功与空队列轮询不写 INFO；重复基础设施错误只在状态变化
+及周期摘要时输出。
 
-```json
-{
-  "eventAction": "ANSIBLE_HOST_COMPLETED",
-  "eventOutcome": "FAILED",
-  "runId": "...",
-  "hostId": "...",
-  "hostName": "worker03",
-  "returnCode": 1
-}
+审计规则：
+
+```text
+成功业务变更与审计记录处于同一数据库事务，提交后才输出成功日志
+拒绝和失败事件通过最长 2 秒的独立短事务尽力写入
+审计不可用时仍写 stdout，且不得覆盖原始业务异常
+RunEvent 保存执行详情；audit_events 只保存生命周期、结果与计数
+Worker 启动时及每 24 小时尝试 advisory lock，按 5000 条删除过期审计
+默认保留 180 天，可配置 1..3650 天
 ```
 
 禁止记录：
@@ -2275,30 +2320,21 @@ privateKey
 包含秘密的 Extra Vars
 Master Key
 数据库密文原文
+命令正文与 Ansible 原始载荷
+Token、Cookie、CSRF 与数据库 URL
 ```
 
-建议事件动作：
+CLI 运维接口：
 
-```text
-HOST_CREATED
-HOST_UPDATED
-HOST_DELETED
-
-CREDENTIAL_CREATED
-CREDENTIAL_ROTATED
-CREDENTIAL_DISABLED
-
-OPERATION_RUN_CREATED
-OPERATION_RUN_CLAIMED
-OPERATION_RUN_STARTED
-OPERATION_RUN_CANCEL_REQUESTED
-OPERATION_RUN_COMPLETED
-OPERATION_RUN_INTERRUPTED
-
-RUNTIME_INVENTORY_CREATED
-RUNTIME_INVENTORY_DESTROYED
-ANSIBLE_HOST_COMPLETED
+```bash
+ops-composer audit list
+ops-composer audit export --since <UTC> --until <UTC> --output <JSONL>
+ops-composer audit purge             # dry-run
+ops-composer audit purge --execute
 ```
+
+`list` 默认查询最近 24 小时、200 条，支持动作、结果、来源、Run、管理员、资源、错误码和游标；
+`export` 流式写入权限 `0600` 的 JSONL，默认拒绝覆盖；`purge` 必须显式 `--execute`。
 
 ---
 
@@ -2316,7 +2352,10 @@ services:
       POSTGRES_USER: ops_composer
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./volumes/postgres:/var/lib/postgresql/data
+    logging: &local-logging
+      driver: local
+      options: {max-size: "20m", max-file: "10"}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ops_composer -d ops_composer"]
 
@@ -2328,6 +2367,8 @@ services:
       OPS_COMPOSER_MASTER_KEY: ${OPS_COMPOSER_MASTER_KEY}
       OPS_COMPOSER_WORKSPACE: /workspace
       OPS_COMPOSER_RUNTIME_DIR: /tmp/ops-composer/runtime
+      APP_LOG_LEVEL: INFO
+      OPS_COMPOSER_AUDIT_RETENTION_DAYS: 180
     depends_on:
       db:
         condition: service_healthy
@@ -2344,6 +2385,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    logging: *local-logging
 
   worker:
     image: ops-composer:local
@@ -2355,9 +2397,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-
-volumes:
-  postgres_data:
+    logging: *local-logging
 ```
 
 ## 21.2 镜像内容
@@ -2580,6 +2620,11 @@ CASE-22 禁用 Credential 导致 Run REJECTED
 CASE-23 Runtime Inventory 执行后被删除
 CASE-24 浏览器刷新后 SSE 从 Last-Event-ID 恢复
 CASE-25 Retry 创建新 Run 且保留 sourceRunId
+CASE-26 业务写入与对应审计在同一事务提交或回滚
+CASE-27 审计不可用时原始业务错误不被覆盖且 stdout 仍有安全日志
+CASE-28 审计过滤、游标、advisory lock 与 180 天分批清理正确
+CASE-29 stdout、audit_events、RunEvent 与导出中不存在哨兵秘密
+CASE-30 局域网 HTTP 环境缺少 crypto.randomUUID 时仍能创建幂等键
 ```
 
 ### 24.1 集成测试环境

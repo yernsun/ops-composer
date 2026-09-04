@@ -16,6 +16,7 @@ class OpsError(Exception):
     ) -> None:
         self.message = message or self.public_message
         self.details = details
+        self.audit_recorded = False
         super().__init__(self.message)
 
 

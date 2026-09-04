@@ -21,7 +21,15 @@ from ops_composer.auth.api import router as auth_router
 from ops_composer.db.migration_engine import MigrationRunner
 from ops_composer.db.pool import create_pool
 from ops_composer.db.registry import MIGRATIONS
+from ops_composer.domain.audit import (
+    AuditAction,
+    AuditOutcome,
+    AuditSeverity,
+    AuditSource,
+)
+from ops_composer.observability import log_event, safe_exception_fields
 from ops_composer.services.assets import CredentialService
+from ops_composer.services.audit import AuditService, new_audit_event
 from ops_composer.services.crypto import CredentialCipher
 from ops_composer.settings import get_settings
 from ops_composer.uow.factory import UnitOfWorkFactory
@@ -45,34 +53,123 @@ class SpaStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    log_event(
+        AuditAction.APP_STARTING,
+        AuditOutcome.STARTED,
+        source=AuditSource.SYSTEM,
+        message="API process is starting",
+    )
     pool = create_pool(settings.database_url)
-    await pool.open()
     try:
-        async with pool.connection() as connection:
-            await MigrationRunner(connection, MIGRATIONS).validate_current()
+        await pool.open()
+    except Exception as error:
+        log_event(
+            AuditAction.DATABASE_UNAVAILABLE,
+            AuditOutcome.FAILED,
+            source=AuditSource.SYSTEM,
+            severity=AuditSeverity.CRITICAL,
+            message="API could not open the PostgreSQL connection pool",
+            failure_stage="database_pool_open",
+            retryable=True,
+            exception_type=type(error).__name__,
+            metadata=safe_exception_fields(error),
+            exc_info=True,
+        )
+        raise
+    audit_service: AuditService | None = None
+    ready = False
+    try:
+        try:
+            async with pool.connection() as connection:
+                await MigrationRunner(connection, MIGRATIONS).validate_current()
+        except Exception as error:
+            log_event(
+                AuditAction.MIGRATION_VALIDATION_FAILED,
+                AuditOutcome.FAILED,
+                source=AuditSource.SYSTEM,
+                severity=AuditSeverity.CRITICAL,
+                message="API migration validation failed",
+                failure_stage="migration_validation",
+                retryable=False,
+                exception_type=type(error).__name__,
+                metadata=safe_exception_fields(error),
+                exc_info=True,
+            )
+            raise
         factory = UnitOfWorkFactory(pool)
+        audit_service = AuditService(factory)
         cipher = CredentialCipher(
             settings.master_key.get_secret_value(), settings.master_key_version
         )
-        await CredentialService(factory, cipher).ensure_master_key()
-        settings.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        settings.runtime_dir.chmod(0o700)
+        try:
+            await CredentialService(factory, cipher).ensure_master_key()
+        except Exception as error:
+            await audit_service.record_best_effort(
+                new_audit_event(
+                    AuditAction.MASTER_KEY_VALIDATION_FAILED,
+                    AuditOutcome.FAILED,
+                    source=AuditSource.SYSTEM,
+                    severity=AuditSeverity.CRITICAL,
+                    failure_stage="master_key_validation",
+                    retryable=False,
+                    exception_type=type(error).__name__,
+                    metadata=safe_exception_fields(error),
+                )
+            )
+            raise
+        try:
+            settings.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            settings.runtime_dir.chmod(0o700)
+        except OSError as error:
+            await audit_service.record_best_effort(
+                new_audit_event(
+                    AuditAction.RUNTIME_DIRECTORY_FAILED,
+                    AuditOutcome.FAILED,
+                    source=AuditSource.SYSTEM,
+                    severity=AuditSeverity.CRITICAL,
+                    failure_stage="runtime_directory",
+                    retryable=False,
+                    exception_type=type(error).__name__,
+                    metadata=safe_exception_fields(error),
+                )
+            )
+            raise
         app.state.database_pool = pool
         app.state.unit_of_work_factory = factory
+        await audit_service.record_best_effort(
+            new_audit_event(
+                AuditAction.APP_READY,
+                AuditOutcome.SUCCEEDED,
+                source=AuditSource.SYSTEM,
+            )
+        )
+        ready = True
         yield
     finally:
+        if audit_service is not None and ready:
+            await audit_service.record_best_effort(
+                new_audit_event(
+                    AuditAction.APP_STOPPED,
+                    AuditOutcome.SUCCEEDED,
+                    source=AuditSource.SYSTEM,
+                )
+            )
         await pool.close()
 
 
 def create_app() -> FastAPI:
-    configure_logging()
+    settings = get_settings()
+    configure_logging(
+        service="api",
+        environment=settings.app_env.value,
+        level=settings.log_level.value,
+    )
     application = FastAPI(
         title="OpsComposer API",
         version="0.1.0",
         lifespan=lifespan,
     )
     application.add_middleware(RequestContextMiddleware)
-    settings = get_settings()
     application.add_middleware(
         CORSMiddleware,
         allow_origins=sorted(settings.allowed_origins),

@@ -11,7 +11,7 @@ import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import { computed, reactive, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
@@ -23,7 +23,7 @@ const { t } = useI18n()
 const router = useRouter()
 const toast = useToast()
 const confirm = useConfirm()
-const target = reactive<TargetValue>({ kind: 'ALL', hostIds: [], groupId: null })
+const target = ref<TargetValue>({ kind: 'ALL', hostIds: [], groupId: null })
 const mode = ref<'COMMAND' | 'SHELL'>('COMMAND')
 const command = ref('')
 const become = ref('CREDENTIAL_DEFAULT')
@@ -44,9 +44,9 @@ const runMutation = useMutation({
   mutationFn: (confirmed: boolean) =>
     api.createCommandRun({
       target: {
-        kind: target.kind,
-        hostIds: target.hostIds,
-        groupId: target.groupId,
+        kind: target.value.kind,
+        hostIds: target.value.hostIds,
+        groupId: target.value.groupId,
       },
       mode: mode.value,
       command: command.value,

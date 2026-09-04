@@ -21,6 +21,7 @@ from ops_composer.domain.ops import (
     RunTarget,
     TargetKind,
 )
+from ops_composer.observability import bind_log_context
 from ops_composer.services.playbooks import PlaybookCatalog
 from ops_composer.services.runs import RunService
 from ops_composer.settings import get_settings
@@ -95,6 +96,7 @@ async def get_run(
     factory: UnitOfWorkFactoryDep,
     _: CurrentSessionDep,
 ) -> RunDetailResponse:
+    bind_log_context(run_id=run_id)
     run, targets = await _service(factory).detail(run_id)
     return RunDetailResponse(run=run, targets=targets)
 
@@ -110,7 +112,7 @@ async def create_command_run(
     factory: UnitOfWorkFactoryDep,
     principal: UnsafeSessionDep,
 ) -> Run:
-    return await _service(factory).create_command(
+    run = await _service(factory).create_command(
         requested_by=principal.user_id,
         idempotency_key=idempotency_key,
         target_kind=request.target.kind,
@@ -123,6 +125,8 @@ async def create_command_run(
         timeout_seconds=request.timeout_seconds,
         forks=request.forks,
     )
+    bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
+    return run
 
 
 @router.post(
@@ -136,7 +140,7 @@ async def create_playbook_run(
     factory: UnitOfWorkFactoryDep,
     principal: UnsafeSessionDep,
 ) -> Run:
-    return await _service(factory).create_playbook(
+    run = await _service(factory).create_playbook(
         requested_by=principal.user_id,
         idempotency_key=idempotency_key,
         target_kind=request.target.kind,
@@ -149,6 +153,8 @@ async def create_playbook_run(
         timeout_seconds=request.timeout_seconds,
         forks=request.forks,
     )
+    bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
+    return run
 
 
 @router.post(
@@ -162,20 +168,23 @@ async def test_host(
     factory: UnitOfWorkFactoryDep,
     principal: UnsafeSessionDep,
 ) -> Run:
-    return await _service(factory).create_ping(
+    run = await _service(factory).create_ping(
         requested_by=principal.user_id,
         idempotency_key=idempotency_key,
         host_id=host_id,
     )
+    bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
+    return run
 
 
 @router.post("/runs/{run_id}/cancel", operation_id="cancelRun")
 async def cancel_run(
     run_id: UUID,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> Run:
-    return await _service(factory).cancel(run_id)
+    bind_log_context(run_id=run_id, correlation_id=str(run_id))
+    return await _service(factory).cancel(run_id, requested_by=principal.user_id)
 
 
 @router.post(
@@ -189,9 +198,12 @@ async def retry_run(
     factory: UnitOfWorkFactoryDep,
     principal: UnsafeSessionDep,
 ) -> Run:
-    return await _service(factory).retry(
+    bind_log_context(run_id=run_id, correlation_id=str(run_id))
+    run = await _service(factory).retry(
         run_id, requested_by=principal.user_id, idempotency_key=idempotency_key
     )
+    bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
+    return run
 
 
 @router.get("/runs/{run_id}/events", operation_id="listRunEvents")
@@ -201,6 +213,7 @@ async def list_run_events(
     _: CurrentSessionDep,
     after: int = Query(default=0, ge=0),
 ) -> tuple[RunEvent, ...]:
+    bind_log_context(run_id=run_id)
     return await _service(factory).events_after(run_id, after)
 
 
@@ -213,6 +226,7 @@ async def stream_run_events(
     after: int = Query(default=0, ge=0),
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
+    bind_log_context(run_id=run_id)
     service = _service(factory)
     run = await service.get(run_id)
     cursor = after

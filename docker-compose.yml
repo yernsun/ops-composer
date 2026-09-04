@@ -1,5 +1,11 @@
 name: ops-composer
 
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: "20m"
+    max-file: "10"
+
 x-application: &application
   image: ${OPS_COMPOSER_IMAGE:-ops-composer:local}
   build:
@@ -7,6 +13,7 @@ x-application: &application
     target: runtime
   environment: &application-environment
     APP_ENV: ${APP_ENV:-production}
+    APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
     DATABASE_URL: ${DATABASE_URL:?set a PostgreSQL URL with percent-encoded credentials}
     APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:?set the external browser origin}
     APP_SESSION_COOKIE_SECURE: ${APP_SESSION_COOKIE_SECURE:-true}
@@ -16,12 +23,15 @@ x-application: &application
     OPS_COMPOSER_MASTER_KEY_VERSION: ${OPS_COMPOSER_MASTER_KEY_VERSION:-1}
     OPS_COMPOSER_PLAYBOOK_WORKSPACE: /workspace
     OPS_COMPOSER_RUNTIME_DIR: /var/lib/ops-composer/runtime
+    OPS_COMPOSER_AUDIT_RETENTION_DAYS: ${OPS_COMPOSER_AUDIT_RETENTION_DAYS:-180}
   volumes:
     - ${PLAYBOOK_WORKSPACE:-./playbooks}:/workspace:ro
+  logging: *default-logging
 
 services:
   db:
     image: postgres:16-alpine
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ops_composer}
@@ -46,7 +56,14 @@ services:
   api:
     <<: *application
     restart: unless-stopped
-    command: ["fastapi", "run", "--host", "0.0.0.0", "--port", "8000"]
+    command:
+      - uvicorn
+      - ops_composer.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --no-access-log
     ports:
       - "${APP_BIND_HOST:-127.0.0.1}:${APP_PORT:-8080}:8000"
     depends_on:

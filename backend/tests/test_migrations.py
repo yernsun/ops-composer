@@ -13,6 +13,7 @@ from ops_composer.db.migration_engine import (
     MigrationRunner,
     ordered_migrations,
 )
+from ops_composer.db.migrations.audit import AUDIT
 from ops_composer.db.migrations.auth import AUTH
 from ops_composer.db.migrations.auth_security import AUTH_SECURITY
 from ops_composer.db.migrations.core import CORE
@@ -191,12 +192,13 @@ async def test_readiness_repository_requires_exact_current_checksums() -> None:
 
 
 def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
-    result = ordered_migrations((OPS_COMPOSER, AUTH_SECURITY, AUTH, CORE))
+    result = ordered_migrations((AUDIT, OPS_COMPOSER, AUTH_SECURITY, AUTH, CORE))
     assert [entry.migration_id for entry in result] == [
         "0001_core",
         "0020_auth",
         "0021_auth_security",
         "0030_ops_composer",
+        "0040_audit_events",
     ]
     schema_sql = OPS_COMPOSER.up_sql.lower()
     assert "jsonb" in schema_sql
@@ -204,3 +206,10 @@ def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
     assert "bytea" in schema_sql
     assert "credential_type in ('password')" in schema_sql
     assert "sqlite" not in schema_sql
+
+    audit_sql = AUDIT.up_sql.lower()
+    assert "generated always as identity" in audit_sql
+    assert "timestamptz" in audit_sql
+    assert "jsonb" in audit_sql
+    assert "foreign key" not in audit_sql
+    assert "audit_events_reject_update" in audit_sql

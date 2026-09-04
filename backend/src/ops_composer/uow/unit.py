@@ -11,6 +11,7 @@ from ops_composer.db.registry import MIGRATIONS
 from ops_composer.db.repository_connection import PsycopgRepositoryConnection
 from ops_composer.db.types import DbPool
 from ops_composer.repositories.assets import PostgresAssetRepository
+from ops_composer.repositories.audit import PostgresAuditRepository
 from ops_composer.repositories.base import RepositoryConnection
 from ops_composer.repositories.health import PostgresHealthRepository
 from ops_composer.repositories.runs import PostgresRunRepository
@@ -88,6 +89,12 @@ class UnitOfWork:
         """Return durable queue, execution, Lease, lock, and event persistence."""
 
         return PostgresRunRepository(self._require_connection())
+
+    @cached_property
+    def audit(self) -> PostgresAuditRepository:
+        """Return append-only operational audit persistence."""
+
+        return PostgresAuditRepository(self._require_connection())
 
     async def __aexit__(
         self,
