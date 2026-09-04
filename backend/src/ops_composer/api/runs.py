@@ -70,14 +70,22 @@ class PlaybookValidationResponse(StrictApiModel):
     output: str
 
 
+class OverviewResponse(StrictApiModel):
+    host_count: int = Field(ge=0)
+    enabled_host_count: int = Field(ge=0)
+    runs_today: int = Field(ge=0)
+    failed_runs: int = Field(ge=0)
+    active_runs: int = Field(ge=0)
+
+
 def _service(factory: UnitOfWorkFactoryDep) -> RunService:
     settings = get_settings()
     return RunService(factory, settings, PlaybookCatalog(settings.playbook_workspace))
 
 
 @router.get("/overview", operation_id="getOverview")
-async def overview(factory: UnitOfWorkFactoryDep, _: CurrentSessionDep) -> dict[str, object]:
-    return await _service(factory).dashboard()
+async def overview(factory: UnitOfWorkFactoryDep, _: CurrentSessionDep) -> OverviewResponse:
+    return OverviewResponse.model_validate(await _service(factory).dashboard())
 
 
 @router.get("/runs", operation_id="listRuns")

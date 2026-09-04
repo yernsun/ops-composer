@@ -393,6 +393,20 @@ beforeEach(() => {
 })
 
 describe('PrimeVue application views', () => {
+  it('renders all Overview metrics from the camelCase API response', async () => {
+    const wrapper = shallowMount(DashboardPage, mountOptions())
+    await flushPromises()
+
+    expect(wrapper.findAll('.stat-card strong').map((item) => item.text())).toEqual([
+      '2',
+      '0',
+      '3',
+      '1',
+    ])
+    expect(wrapper.find('.status-donut strong').text()).toBe('2')
+    wrapper.unmount()
+  })
+
   it('renders every M1 page with populated query states', async () => {
     const pages: Array<{ component: Component; props?: Record<string, unknown> }> = [
       { component: DashboardPage },

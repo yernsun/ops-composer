@@ -21,14 +21,7 @@ export type RunDetailDto = components['schemas']['RunDetailResponse']
 export type CommandRunDto = components['schemas']['CommandRunRequest']
 export type PlaybookRunDto = components['schemas']['PlaybookRunRequest']
 export type PlaybookDto = components['schemas']['Playbook']
-
-export interface OverviewDto {
-  hostCount: number
-  enabledHostCount: number
-  runsToday: number
-  failedRuns: number
-  activeRuns: number
-}
+export type OverviewDto = components['schemas']['OverviewResponse']
 
 export interface SystemInfoDto {
   name: string

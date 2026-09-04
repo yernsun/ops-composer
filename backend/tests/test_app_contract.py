@@ -49,6 +49,18 @@ def test_m1_openapi_contract_is_single_admin_and_complete() -> None:
         for parameter in create_run["parameters"]
     )
 
+    overview = schema["paths"]["/api/v1/overview"]["get"]
+    overview_schema = overview["responses"]["200"]["content"]["application/json"]["schema"]
+    assert overview_schema["$ref"] == "#/components/schemas/OverviewResponse"
+    overview_properties = schema["components"]["schemas"]["OverviewResponse"]["properties"]
+    assert set(overview_properties) == {
+        "hostCount",
+        "enabledHostCount",
+        "runsToday",
+        "failedRuns",
+        "activeRuns",
+    }
+
     login = schema["paths"]["/api/v1/auth/login"]["post"]
     assert login["operationId"] == "login"
     assert {"401", "403", "429"} <= login["responses"].keys()
