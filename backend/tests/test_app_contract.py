@@ -23,6 +23,11 @@ def test_m1_openapi_contract_is_single_admin_and_complete() -> None:
         "/api/v1/inventory/resolve",
         "/api/v1/inventory/preview",
         "/api/v1/playbooks",
+        "/api/v1/playbooks/config",
+        "/api/v1/playbooks/database",
+        "/api/v1/playbooks/database/{playbook_id}",
+        "/api/v1/playbooks/detail",
+        "/api/v1/playbooks/validate",
         "/api/v1/runs/commands",
         "/api/v1/runs/playbooks",
         "/api/v1/runs/{run_id}",
@@ -33,7 +38,7 @@ def test_m1_openapi_contract_is_single_admin_and_complete() -> None:
         "/api/v1/system/doctor",
     }
     assert expected <= paths
-    assert len(paths) == 33
+    assert len(paths) == 36
     assert not any("signup" in path or "workspace" in path for path in paths)
 
     session = schema["components"]["schemas"]["SessionResponse"]["properties"]
@@ -72,6 +77,7 @@ def test_settings_only_expose_postgresql_and_local_runtime_capabilities() -> Non
     assert "database_url" in fields
     assert "master_key" in fields
     assert "playbook_workspace" in fields
+    assert "playbook_source_mode" in fields
     assert "runtime_dir" in fields
     assert "redis_url" not in fields
     assert "sqlite_path" not in fields

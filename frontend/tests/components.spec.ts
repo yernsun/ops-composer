@@ -24,6 +24,8 @@ import {
   ApiRequestError,
   api,
   type CredentialDto,
+  type DatabasePlaybookDto,
+  type PlaybookDto,
   type RunDto,
 } from '@/shared/api/client'
 
@@ -42,6 +44,7 @@ vi.mock('@tanstack/vue-query', async () => {
     invalidateQueries: vi.fn(async () => undefined),
     removeQueries: vi.fn(),
     setQueryData: vi.fn(),
+    fetchQuery: vi.fn(async (options: { queryFn: () => unknown }) => options.queryFn()),
   }
   return {
     useQuery: (options: {
@@ -216,6 +219,23 @@ const event = {
   eventData: { host: host.name },
   createdAt: timestamp,
 }
+const databasePlaybook = {
+  source: 'DATABASE',
+  playbookId: '00000000-0000-4000-8000-000000000070',
+  path: null,
+  name: 'Managed site',
+  description: 'database playbook',
+  enabled: true,
+  editable: true,
+  revision: 2,
+  version: 3,
+  size: 96,
+  modifiedAt: timestamp,
+  sha256: 'c'.repeat(64),
+  content: '---\n- name: Managed site\n  hosts: all\n  tasks: []\n',
+  validatorVersion: 'ansible-core test',
+  validatedAt: timestamp,
+} satisfies DatabasePlaybookDto
 
 const slotData = {
   ...host,
@@ -223,6 +243,17 @@ const slotData = {
   ...group,
   ...run,
   ...target,
+  source: 'MOUNT',
+  path: 'playbooks/site.yml',
+  playbookId: null,
+  description: 'mounted playbook',
+  enabled: true,
+  editable: false,
+  revision: null,
+  version: null,
+  size: 2048,
+  modifiedAt: timestamp,
+  sha256: 'b'.repeat(64),
   status: 'SUCCEEDED',
 }
 const SlotStub = defineComponent({
@@ -304,13 +335,27 @@ beforeEach(() => {
     runs: [run],
     playbooks: [
       {
+        source: 'MOUNT',
+        playbookId: null,
         path: 'playbooks/site.yml',
         name: 'Site',
+        description: '',
+        enabled: true,
+        editable: false,
+        revision: null,
+        version: null,
         size: 2048,
         modifiedAt: timestamp,
         sha256: 'b'.repeat(64),
       },
     ],
+    'playbook-config': {
+      sourceMode: 'both',
+      databaseEnabled: true,
+      databaseWritable: true,
+      mountEnabled: true,
+      mountReadOnly: true,
+    },
     run: { run, targets: [target] },
     'run-events': [event],
     'system-info': {
@@ -321,6 +366,7 @@ beforeEach(() => {
       projectForgeCommit: 'test',
       projectForgeTemplateDigest: 'test',
       playbookWorkspace: '/workspace',
+      playbookSourceMode: 'both',
     },
     'system-doctor': {
       database: { ok: true },
@@ -351,6 +397,9 @@ beforeEach(() => {
   )
   vi.spyOn(api, 'playbooks').mockResolvedValue(
     state.queries.playbooks as Awaited<ReturnType<typeof api.playbooks>>,
+  )
+  vi.spyOn(api, 'playbookConfig').mockResolvedValue(
+    state.queries['playbook-config'] as Awaited<ReturnType<typeof api.playbookConfig>>,
   )
   vi.spyOn(api, 'run').mockResolvedValue(
     state.queries.run as Awaited<ReturnType<typeof api.run>>,
@@ -387,6 +436,10 @@ beforeEach(() => {
   vi.spyOn(api, 'deleteCredential').mockResolvedValue(undefined)
   vi.spyOn(api, 'createCommandRun').mockResolvedValue(run)
   vi.spyOn(api, 'createPlaybookRun').mockResolvedValue(run)
+  vi.spyOn(api, 'databasePlaybook').mockResolvedValue(databasePlaybook)
+  vi.spyOn(api, 'createDatabasePlaybook').mockResolvedValue(databasePlaybook)
+  vi.spyOn(api, 'updateDatabasePlaybook').mockResolvedValue(databasePlaybook)
+  vi.spyOn(api, 'deleteDatabasePlaybook').mockResolvedValue(undefined)
   vi.spyOn(api, 'cancelRun').mockResolvedValue(run)
   vi.spyOn(api, 'retryRun').mockResolvedValue(run)
   vi.spyOn(api, 'validatePlaybook').mockResolvedValue({ valid: true, output: 'ok' })
@@ -532,6 +585,71 @@ describe('PrimeVue application views', () => {
 
     expect(wrapper.text()).toContain('HOST_KEY_CONFIRMATION_REQUIRED')
     expect(wrapper.text()).toContain('hosts.confirmationRequiredRun')
+    wrapper.unmount()
+  })
+
+  it('supports the database Playbook create, edit, validate, toggle, delete, and run flows', async () => {
+    state.queries.playbooks = [databasePlaybook]
+    const wrapper = shallowMount(PlaybooksPage, mountOptions())
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      form: {
+        playbookId: string | null
+        name: string
+        content: string
+        version: number
+      }
+      newPlaybook: () => void
+      editPlaybook: (playbook: PlaybookDto) => Promise<void>
+      validateDraft: () => void
+      validateRow: (playbook: PlaybookDto) => void
+      openRun: (playbook: PlaybookDto) => void
+      removePlaybook: (playbook: PlaybookDto) => void
+      formatSize: (bytes: number) => string
+      saveMutation: { mutate: () => void }
+      toggleMutation: { mutate: (playbook: PlaybookDto) => void }
+      executeMutation: { mutate: () => void }
+    }
+
+    view.newPlaybook()
+    view.form.name = 'New managed Playbook'
+    view.saveMutation.mutate()
+    await flushPromises()
+    expect(api.createDatabasePlaybook).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'New managed Playbook' }),
+    )
+
+    await view.editPlaybook(databasePlaybook)
+    expect(view.form.playbookId).toBe(databasePlaybook.playbookId)
+    expect(view.form.version).toBe(3)
+    view.validateDraft()
+    view.validateRow(databasePlaybook)
+    view.saveMutation.mutate()
+    view.toggleMutation.mutate(databasePlaybook)
+    view.openRun(databasePlaybook)
+    view.executeMutation.mutate()
+    view.removePlaybook(databasePlaybook)
+    await flushPromises()
+
+    const confirmation = state.confirmations.mock.calls.at(-1)?.[0] as
+      | { accept?: () => Promise<void> }
+      | undefined
+    await confirmation?.accept?.()
+    await flushPromises()
+
+    expect(api.validatePlaybook).toHaveBeenCalledWith({ content: databasePlaybook.content })
+    expect(api.validatePlaybook).toHaveBeenCalledWith({
+      playbook: { source: 'DATABASE', playbookId: databasePlaybook.playbookId },
+    })
+    expect(api.updateDatabasePlaybook).toHaveBeenCalled()
+    expect(api.createPlaybookRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        playbook: { source: 'DATABASE', playbookId: databasePlaybook.playbookId },
+      }),
+    )
+    expect(api.deleteDatabasePlaybook).toHaveBeenCalledWith(databasePlaybook.playbookId, 3)
+    expect(view.formatSize(512)).toBe('512 B')
+    expect(view.formatSize(2048)).toBe('2.0 KiB')
     wrapper.unmount()
   })
 })

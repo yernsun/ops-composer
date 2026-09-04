@@ -43,6 +43,31 @@ class ValidationError(OpsError):
     public_message = "operation is invalid"
 
 
+class PlaybookNotFoundError(NotFoundError):
+    code = "playbook_not_found"
+    public_message = "playbook not found"
+
+
+class PlaybookInvalidError(ValidationError):
+    code = "playbook_invalid"
+    public_message = "playbook validation failed"
+
+
+class PlaybookSourceDisabledError(ValidationError):
+    code = "playbook_source_disabled"
+    public_message = "playbook source is disabled"
+
+
+class PlaybookDisabledError(ValidationError):
+    code = "playbook_disabled"
+    public_message = "playbook is disabled"
+
+
+class PlaybookVersionConflictError(ConflictError):
+    code = "playbook_version_conflict"
+    public_message = "playbook was modified by another request"
+
+
 class HostKeyChangedError(ConflictError):
     code = "host_key_changed"
     public_message = "the SSH host key differs from the trusted key"

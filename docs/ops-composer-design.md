@@ -6,7 +6,7 @@
 - **仓库名称**：`ops-composer`
 - **Python 包名**：`ops_composer`
 - **CLI 命令**：`ops-composer`
-- **文档状态**：Draft / M1 Design Baseline
+- **文档状态**：Implemented / M1 + database Playbook revisions
 - **目标部署形态**：本地 Docker 部署，远程管理物理机或虚拟机集群
 - **执行内核**：Ansible Core + Ansible Runner
 
@@ -264,7 +264,8 @@ ops-composer-api
 ops-composer-worker
 ```
 
-两者只通过 PostgreSQL 共享持久化状态。Workspace 是只读输入，运行目录是 Worker 的临时目录：
+两者只通过 PostgreSQL 共享持久化状态。数据库 Playbook 也存入 PostgreSQL；可选的
+Workspace 是只读输入，运行目录是 Worker 的临时目录：
 
 ```text
 /tmp/ops-composer/
@@ -931,90 +932,53 @@ PTY：关闭
 
 ## 9. Playbook 设计
 
-## 9.1 Workspace 模型
+## 9.1 来源模式
 
-为了保持比 Semaphore 更简单，M1 不在数据库中创建：
-
-```text
-Repository
-Project
-Environment
-Template
-```
-
-直接挂载标准 Workspace：
+`OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` 支持：
 
 ```text
-/workspace/
-├── ansible.cfg
-├── playbooks/
-│   ├── ping.yml
-│   ├── status.yml
-│   ├── system-update.yml
-│   ├── reboot.yml
-│   ├── docker-install.yml
-│   └── swarm-status.yml
-├── roles/
-├── group_vars/
-├── collections/
-│   └── requirements.yml
-└── ops-composer.yml
+database  只启用 PostgreSQL Playbook，完全忽略 Workspace
+mount     只启用只读挂载目录，不开放 Web 写入
+both      同时启用，默认值
 ```
 
-Workspace 在运行容器中应只读挂载。
+两种来源以 `source + reference` 唯一标识。同名、同路径条目可共存，不相互覆盖。`both`
+模式缺少挂载目录只在 Doctor 中标记降级，不阻塞数据库 Playbook。
 
-## 9.2 Playbook 发现
+## 9.2 数据库 Playbook
 
-只扫描：
+数据库来源只保存一个 YAML 文件。Web 支持创建、校验、编辑、启停和软删除；不支持草稿、
+多文件项目、revision 回滚界面、挂载导入或同步。保存前必须满足：
+
+```text
+内容非空且不含 NUL
+UTF-8 字节数不超过 1 MiB
+换行统一为 LF，其他原始空白保持不变
+YAML 根节点为 play 列表
+隔离临时目录中的 ansible-playbook --syntax-check 成功
+```
+
+每次保存生成不可变 revision。Run 创建事务固定 `playbook_id + playbook_revision + sha256`；
+后续编辑、停用或删除不改变已创建 Run。历史 Retry 复制原 revision。Worker 把固定 YAML
+以 `0600` 写入 Run 专属 `0700` project 目录，结束、失败或恢复时清理。该目录不包含挂载
+Workspace，因此不能隐式引用其中的 roles、templates、files 或 vars；只可使用 builtin 和
+镜像内 collection。
+
+Playbook 是可信代码，以明文存入 PostgreSQL，不得包含 Credential 或部署 Secret。日志、
+`audit_events` 和 RunEvent 不记录 YAML 或 syntax-check 原始载荷。
+
+## 9.3 挂载 Playbook
+
+挂载来源保持只读，只扫描：
 
 ```text
 /workspace/playbooks/**/*.yml
 /workspace/playbooks/**/*.yaml
 ```
 
-不得扫描整个 Workspace，避免把 Role Task、变量文件或 requirements 文件误判为 Playbook。
-
-每个 Playbook 记录：
-
-```text
-VALID
-INVALID
-UNKNOWN
-```
-
-无效 Playbook 不允许执行。
-
-## 9.3 可选元数据
-
-`ops-composer.yml`：
-
-```yaml
-apiVersion: opscomposer/v1
-
-playbooks:
-  system-update:
-    path: playbooks/system-update.yml
-    title: System Update
-    description: Upgrade Debian packages
-    risk: high
-    defaultBecome: true
-    defaultTimeoutSeconds: 1800
-
-    inputs:
-      rebootAfterUpgrade:
-        type: boolean
-        title: Reboot after upgrade
-        default: false
-```
-
-元数据只影响展示和输入表单，真正执行内容仍以标准 Ansible Playbook 为准。
-
-没有元数据时，UI 可由文件名生成标题：
-
-```text
-system-update.yml
-→ System Update
-```
+真实路径必须留在 `playbooks/` 边界内；绝对路径、`..`、越界符号链接和非 YAML 文件均拒绝。
+Run 创建时固定文件 SHA-256，Worker 执行前再次校验。Workspace 可包含标准 roles、templates、
+files 和 vars，但容器挂载必须为只读。
 
 ## 9.4 Playbook 执行请求
 
@@ -1024,9 +988,12 @@ POST /api/v1/runs/playbooks
 
 ```json
 {
-  "playbookPath": "playbooks/system-update.yml",
+  "playbook": {
+    "source": "DATABASE",
+    "playbookId": "b51a20c5-2b23-44f6-af68-b243ae53bc22"
+  },
   "target": {
-    "kind": "group",
+    "kind": "GROUP",
     "groupId": "swarm-workers-uuid"
   },
   "extraVars": {
@@ -1039,27 +1006,10 @@ POST /api/v1/runs/playbooks
 }
 ```
 
-## 9.5 路径安全
+挂载来源对应 `{"source":"MOUNT","path":"playbooks/system-update.yml"}`。旧
+`playbookPath` 暂时按 `MOUNT` 解释，仅用于兼容已有客户端。
 
-必须验证真实路径仍位于 Workspace 内：
-
-```python
-workspace_root = workspace.resolve()
-resolved_path = workspace.joinpath(playbook_path).resolve()
-resolved_path.relative_to(workspace_root)
-```
-
-必须拒绝：
-
-```text
-../../etc/passwd
-绝对路径
-符号链接逃逸
-非 yml/yaml 文件
-Workspace 外路径
-```
-
-## 9.6 Playbook Target 语义
+## 9.5 Playbook Target 语义
 
 用户选择目标后，Runtime Inventory 中只放入被选中的主机，但保留这些主机原有的分组关系。
 
@@ -1468,6 +1418,8 @@ resolved_targets_json
 operation_spec_json
 inventory_snapshot_json
 workspace_revision
+playbook_id (nullable)
+playbook_revision (nullable)
 credential_versions_json
 
 timeout_seconds
@@ -1511,12 +1463,21 @@ UNIQUE(requested_by, idempotency_key)
 
 ```json
 {
-  "playbookPath": "playbooks/status.yml",
+  "playbook": {
+    "source": "DATABASE",
+    "playbookId": "0199c9d4-9c9a-7f59-b301-98d73fcf2447",
+    "revision": 3,
+    "sha256": "..."
+  },
   "extraVars": {},
   "tags": [],
   "skipTags": []
 }
 ```
+
+挂载来源使用 `{ "source": "MOUNT", "path": "playbooks/status.yml", "sha256": "..." }`。
+旧客户端提交的 `playbookPath` 仅在创建接口边界转换为挂载引用；持久化后统一使用带来源的引用。
+`playbook_id + playbook_revision` 仅在数据库来源时同时非空，并通过复合外键固定不可变 revision。
 
 ## 13.6 run_targets
 
@@ -1635,6 +1596,44 @@ metadata (jsonb)
 删除后仍保留历史；数据库触发器拒绝 `UPDATE`，仅保留期任务可以分批 `DELETE`。时间、动作、
 Run、管理员和资源均有查询索引。
 
+## 13.14 playbooks
+
+```text
+id
+name
+description
+enabled
+current_revision
+version
+created_by
+updated_by
+deleted_at
+created_at
+updated_at
+```
+
+活动名称使用大小写不敏感唯一索引。`version` 用于 Web 编辑和启停操作的乐观锁；删除采用软删除，
+不会移除历史 Run 所引用的 revision。
+
+## 13.15 playbook_revisions
+
+```text
+playbook_id
+revision
+yaml_content
+content_sha256
+byte_count
+validator_version
+created_by
+created_at
+
+PRIMARY KEY(playbook_id, revision)
+```
+
+revision 只允许插入；数据库触发器拒绝更新或删除。YAML 保存前统一为 LF，并在隔离临时目录中
+通过根节点检查和 `ansible-playbook --syntax-check`；数据库仅接受不超过 1 MiB 的单文件
+Playbook。
+
 ---
 
 ## 14. API 设计
@@ -1709,11 +1708,17 @@ POST /inventory/validate
 ## 14.5 Playbooks
 
 ```text
-GET  /playbooks
-GET  /playbooks/{id}
-POST /playbooks/refresh
-POST /playbooks/{id}/validate
+GET    /playbooks
+GET    /playbooks/config
+POST   /playbooks/database
+GET    /playbooks/database/{playbookId}
+PUT    /playbooks/database/{playbookId}
+DELETE /playbooks/database/{playbookId}
+POST   /playbooks/validate
 ```
+
+目录项和执行请求使用 `{source, playbookId|path}` 判别引用。数据库内容详情和校验响应均返回
+`Cache-Control: no-store`；数据库写接口继续要求 Session、Origin 和 CSRF。
 
 ## 14.6 Runs
 
@@ -2105,23 +2110,26 @@ Forks       [ 5 ]
 ## 18.6 Playbooks
 
 ```text
-Connectivity Check
-Server Status
-System Update
-Install Docker
-Swarm Status
-Reboot
+Source  Name                 Status   Revision  Size    Updated
+DB      Connectivity Check   Enabled  3         812 B   ...
+Mount   status.yml           Readonly —         1.2 KB  ...
 ```
 
-每个 Playbook 展示：
+页面使用 PrimeVue DataTable 和来源筛选。数据库行支持创建、编辑、启停、删除、校验和执行；
+挂载行只支持校验和执行，并显示“只读挂载”。创建与编辑 Dialog 使用单文件 YAML Textarea，
+客户端可先校验，保存时服务端必须再次校验；并发修改以 `version` 冲突提示管理员刷新。
+
+每个目录项展示：
 
 ```text
-Title
+Source
+Name
 Description
 Validation Status
-Risk Level
-Default Timeout
-Last Modified Revision
+Enabled / Readonly
+Revision
+Byte Size
+Updated At
 ```
 
 ## 18.7 Run Detail
@@ -2170,7 +2178,8 @@ Runtime Secret 文件权限 0600
 默认使用 command 模式
 Shell 模式显式开启并二次确认
 启用 SSH Host Key 验证
-Workspace 只读挂载
+挂载来源的 Workspace 只读挂载
+数据库 Playbook 保存前执行语法检查并固定不可变 revision
 所有执行有 timeout
 所有执行有审计记录
 API 写操作需要认证
@@ -2229,15 +2238,18 @@ StrictHostKeyChecking=no
 
 ## 19.4 Playbook 信任边界
 
-Playbook 本质上是可信代码。任何能修改 Playbook Workspace 的人，理论上都能执行任意远程命令并读取运行时变量。
+Playbook 本质上是可信代码。任何能修改挂载 Workspace 或数据库 Playbook 的管理员，理论上都能
+执行任意远程命令并读取运行时变量。
 
 因此 M1：
 
 ```text
-/workspace 只读
-Playbook 来源由管理员维护
+挂载 /workspace 只读
+数据库 Playbook 仅允许已认证管理员通过受 CSRF 保护的 API 维护
 不允许普通用户上传任意 Playbook
-不允许通过 API 编辑 Playbook 文件
+每次数据库保存必须通过 YAML 和 Ansible syntax-check，并形成不可变 revision
+数据库单文件不得隐式读取挂载 Workspace 的 roles、templates、files 或 vars
+Playbook YAML 视为普通敏感业务数据，不得写入 stdout、audit metadata 或 RunEvent
 ```
 
 ## 19.5 Secret Redaction
@@ -2365,7 +2377,8 @@ services:
     environment: &app-env
       DATABASE_URL: postgresql://ops_composer:${POSTGRES_PASSWORD}@db:5432/ops_composer
       OPS_COMPOSER_MASTER_KEY: ${OPS_COMPOSER_MASTER_KEY}
-      OPS_COMPOSER_WORKSPACE: /workspace
+      OPS_COMPOSER_PLAYBOOK_WORKSPACE: /workspace
+      OPS_COMPOSER_PLAYBOOK_SOURCE_MODE: both
       OPS_COMPOSER_RUNTIME_DIR: /tmp/ops-composer/runtime
       APP_LOG_LEVEL: INFO
       OPS_COMPOSER_AUDIT_RETENTION_DAYS: 180
@@ -2688,7 +2701,7 @@ INV-12 同一 Host 同时最多被一个修改性 Run 持有。
 
 INV-13 Run 聚合状态必须由 RunTarget 和结构化事件计算。
 
-INV-14 Playbook 路径必须位于只读 Workspace 内。
+INV-14 挂载 Playbook 必须位于只读 Workspace 内；数据库 Playbook 必须固定到不可变 revision。
 
 INV-15 Master Key 无效时系统必须 fail closed。
 

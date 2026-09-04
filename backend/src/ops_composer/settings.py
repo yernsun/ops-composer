@@ -28,6 +28,20 @@ class AppLogLevel(StrEnum):
     ERROR = "ERROR"
 
 
+class PlaybookSourceMode(StrEnum):
+    DATABASE = "database"
+    MOUNT = "mount"
+    BOTH = "both"
+
+    @property
+    def database_enabled(self) -> bool:
+        return self in {PlaybookSourceMode.DATABASE, PlaybookSourceMode.BOTH}
+
+    @property
+    def mount_enabled(self) -> bool:
+        return self in {PlaybookSourceMode.MOUNT, PlaybookSourceMode.BOTH}
+
+
 class Settings(BaseSettings):
     """Validated process configuration shared by the API, CLI, and worker."""
 
@@ -76,6 +90,10 @@ class Settings(BaseSettings):
     )
     playbook_workspace: Path = Field(
         default=Path("/workspace"), validation_alias="OPS_COMPOSER_PLAYBOOK_WORKSPACE"
+    )
+    playbook_source_mode: PlaybookSourceMode = Field(
+        default=PlaybookSourceMode.BOTH,
+        validation_alias="OPS_COMPOSER_PLAYBOOK_SOURCE_MODE",
     )
     runtime_dir: Path = Field(
         default=Path("/tmp/ops-composer/runtime"), validation_alias="OPS_COMPOSER_RUNTIME_DIR"
@@ -216,6 +234,7 @@ class Settings(BaseSettings):
             "log_level": self.log_level.value,
             "audit_retention_days": self.audit_retention_days,
             "playbook_workspace": str(self.playbook_workspace),
+            "playbook_source_mode": self.playbook_source_mode.value,
             "runtime_dir": str(self.runtime_dir),
             "authentication": {
                 "mode": "single-administrator",

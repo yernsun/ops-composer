@@ -43,8 +43,24 @@ docker compose run --rm api ops-composer admin bootstrap --username admin
 
 Back up `OPS_COMPOSER_MASTER_KEY`: losing or changing it makes existing credentials undecryptable
 and startup fails closed. Percent-encode reserved password characters in `DATABASE_URL`. The API
-binds to `127.0.0.1:8080` by default and expects deployment-owned TLS termination. `playbooks/` is
-mounted read-only as the Playbook workspace.
+binds to `127.0.0.1:8080` by default and expects deployment-owned TLS termination. The default
+Playbook source mode is `both`: database Playbooks are Web-managed, while `playbooks/` is mounted
+read-only as the optional filesystem source.
+
+## Playbook sources
+
+Set `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` to `database`, `mount`, or `both` (default). Database
+Playbooks support Web create, validation, edit, enable/disable, and soft delete. Every successful
+save creates an immutable revision, and a Run pins that exact revision. A queued or historical Run
+therefore remains executable after later edits or deletion. Database Playbooks are isolated
+single-file projects and cannot implicitly read roles, templates, files, or vars from the mounted
+workspace.
+
+Mounted Playbooks remain read-only. Only `playbooks/**/*.yml` and `playbooks/**/*.yaml` are
+discovered; traversal, absolute paths, and escaping symlinks are rejected. In `both` mode, a missing
+mount is reported as degraded by System Doctor but does not block database Playbooks. Playbook YAML
+is trusted code stored as plaintext in PostgreSQL and must not contain credentials or deployment
+secrets.
 
 ## Operational logs and audit
 
@@ -112,7 +128,8 @@ validation with `HARNESS_DOCKER=1 python3 harness/check.py`.
 All external JSON is camelCase; public errors use `code/message/details/requestId`. Mutating APIs
 require the opaque session, an allowed Origin, and CSRF validation. Credential plaintext exists
 only inside the worker during execution; runtime directories are `0700`, files are `0600`, and are
-cleaned on completion. Playbook paths and the creation-time content hash are verified before use.
+cleaned on completion. Mounted Playbook paths/hashes and database Playbook revision hashes are
+verified before use.
 
 Read [docs/README.md](docs/README.md) for architectural rules and [AGENTS.md](AGENTS.md) before
 performing a Project Forge update.

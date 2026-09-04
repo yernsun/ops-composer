@@ -334,6 +334,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/playbooks/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Playbook Config */
+        get: operations["getPlaybookConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playbooks/database": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Database Playbook */
+        post: operations["createDatabasePlaybook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playbooks/database/{playbook_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Database Playbook */
+        get: operations["getDatabasePlaybook"];
+        /** Update Database Playbook */
+        put: operations["updateDatabasePlaybook"];
+        post?: never;
+        /** Delete Database Playbook */
+        delete: operations["deleteDatabasePlaybook"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/playbooks/detail": {
         parameters: {
             query?: never;
@@ -341,8 +394,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Playbook */
-        get: operations["getPlaybook"];
+        /** Get Mounted Playbook */
+        get: operations["getMountedPlaybook"];
         put?: never;
         post?: never;
         delete?: never;
@@ -693,6 +746,80 @@ export interface components {
          * @enum {string}
          */
         CredentialType: "PASSWORD";
+        /** DatabasePlaybookCreateRequest */
+        DatabasePlaybookCreateRequest: {
+            /** Content */
+            content: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Name */
+            name: string;
+        };
+        /** DatabasePlaybookDetailResponse */
+        DatabasePlaybookDetailResponse: {
+            /** Content */
+            content: string;
+            /** Description */
+            description: string;
+            /** Editable */
+            editable: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Modifiedat
+             * Format: date-time
+             */
+            modifiedAt: string;
+            /** Name */
+            name: string;
+            /** Path */
+            path?: string | null;
+            /** Playbookid */
+            playbookId?: string | null;
+            /** Revision */
+            revision?: number | null;
+            /** Sha256 */
+            sha256: string;
+            /** Size */
+            size: number;
+            source: components["schemas"]["PlaybookSource"];
+            /**
+             * Validatedat
+             * Format: date-time
+             */
+            validatedAt: string;
+            /** Validatorversion */
+            validatorVersion: string;
+            /** Version */
+            version?: number | null;
+        };
+        /** DatabasePlaybookUpdateRequest */
+        DatabasePlaybookUpdateRequest: {
+            /** Content */
+            content: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Name */
+            name: string;
+            /** Version */
+            version: number;
+        };
         /** ErrorResponse */
         ErrorResponse: {
             /** Code */
@@ -960,21 +1087,25 @@ export interface components {
             /** Runstoday */
             runsToday: number;
         };
-        /** Playbook */
-        Playbook: {
-            /**
-             * Modifiedat
-             * Format: date-time
-             */
-            modifiedAt: string;
-            /** Name */
-            name: string;
+        /** PlaybookConfigResponse */
+        PlaybookConfigResponse: {
+            /** Databaseenabled */
+            databaseEnabled: boolean;
+            /** Databasewritable */
+            databaseWritable: boolean;
+            /** Mountenabled */
+            mountEnabled: boolean;
+            /** Mountreadonly */
+            mountReadOnly: boolean;
+            sourceMode: components["schemas"]["PlaybookSourceMode"];
+        };
+        /** PlaybookReferenceRequest */
+        PlaybookReferenceRequest: {
             /** Path */
-            path: string;
-            /** Sha256 */
-            sha256: string;
-            /** Size */
-            size: number;
+            path?: string | null;
+            /** Playbookid */
+            playbookId?: string | null;
+            source: components["schemas"]["PlaybookSource"];
         };
         /** PlaybookRunRequest */
         PlaybookRunRequest: {
@@ -987,8 +1118,12 @@ export interface components {
              * @default 5
              */
             forks: number;
-            /** Playbookpath */
-            playbookPath: string;
+            playbook?: components["schemas"]["PlaybookReferenceRequest"] | null;
+            /**
+             * Playbookpath
+             * @deprecated
+             */
+            playbookPath?: string | null;
             /**
              * Skiptags
              * @default []
@@ -1006,10 +1141,55 @@ export interface components {
              */
             timeoutSeconds: number;
         };
+        /**
+         * PlaybookSource
+         * @enum {string}
+         */
+        PlaybookSource: "DATABASE" | "MOUNT";
+        /**
+         * PlaybookSourceMode
+         * @enum {string}
+         */
+        PlaybookSourceMode: "database" | "mount" | "both";
+        /** PlaybookSummaryResponse */
+        PlaybookSummaryResponse: {
+            /** Description */
+            description: string;
+            /** Editable */
+            editable: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Modifiedat
+             * Format: date-time
+             */
+            modifiedAt: string;
+            /** Name */
+            name: string;
+            /** Path */
+            path?: string | null;
+            /** Playbookid */
+            playbookId?: string | null;
+            /** Revision */
+            revision?: number | null;
+            /** Sha256 */
+            sha256: string;
+            /** Size */
+            size: number;
+            source: components["schemas"]["PlaybookSource"];
+            /** Version */
+            version?: number | null;
+        };
         /** PlaybookValidationRequest */
         PlaybookValidationRequest: {
-            /** Path */
-            path: string;
+            /** Content */
+            content?: string | null;
+            /**
+             * Path
+             * @deprecated
+             */
+            path?: string | null;
+            playbook?: components["schemas"]["PlaybookReferenceRequest"] | null;
         };
         /** PlaybookValidationResponse */
         PlaybookValidationResponse: {
@@ -1054,6 +1234,10 @@ export interface components {
             operationSpec: {
                 [key: string]: unknown;
             };
+            /** Playbookid */
+            playbookId?: string | null;
+            /** Playbookrevision */
+            playbookRevision?: number | null;
             /** Requestfingerprint */
             requestFingerprint: string;
             /**
@@ -2088,12 +2272,162 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Playbook"][];
+                    "application/json": components["schemas"]["PlaybookSummaryResponse"][];
                 };
             };
         };
     };
-    getPlaybook: {
+    getPlaybookConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookConfigResponse"];
+                };
+            };
+        };
+    };
+    createDatabasePlaybook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatabasePlaybookCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabasePlaybookDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getDatabasePlaybook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabasePlaybookDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    updateDatabasePlaybook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatabasePlaybookUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabasePlaybookDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deleteDatabasePlaybook: {
+        parameters: {
+            query: {
+                version: number;
+            };
+            header?: never;
+            path: {
+                playbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getMountedPlaybook: {
         parameters: {
             query: {
                 path: string;
@@ -2110,7 +2444,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Playbook"];
+                    "application/json": components["schemas"]["PlaybookSummaryResponse"];
                 };
             };
             /** @description Validation Error */

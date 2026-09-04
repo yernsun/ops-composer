@@ -20,7 +20,13 @@ export type RunEventDto = components['schemas']['RunEvent']
 export type RunDetailDto = components['schemas']['RunDetailResponse']
 export type CommandRunDto = components['schemas']['CommandRunRequest']
 export type PlaybookRunDto = components['schemas']['PlaybookRunRequest']
-export type PlaybookDto = components['schemas']['Playbook']
+export type PlaybookDto = components['schemas']['PlaybookSummaryResponse']
+export type PlaybookConfigDto = components['schemas']['PlaybookConfigResponse']
+export type DatabasePlaybookDto = components['schemas']['DatabasePlaybookDetailResponse']
+export type DatabasePlaybookCreateDto = components['schemas']['DatabasePlaybookCreateRequest']
+export type DatabasePlaybookUpdateDto = components['schemas']['DatabasePlaybookUpdateRequest']
+export type PlaybookValidationDto = components['schemas']['PlaybookValidationRequest']
+export type PlaybookValidationResultDto = components['schemas']['PlaybookValidationResponse']
 export type OverviewDto = components['schemas']['OverviewResponse']
 
 export interface SystemInfoDto {
@@ -31,6 +37,7 @@ export interface SystemInfoDto {
   projectForgeCommit: string
   projectForgeTemplateDigest: string
   playbookWorkspace: string
+  playbookSourceMode: string
 }
 
 interface ErrorEnvelope {
@@ -253,10 +260,27 @@ export const api = {
       idempotencyKey: newIdempotencyKey(),
     }),
   playbooks: () => request<PlaybookDto[]>('/api/v1/playbooks'),
-  validatePlaybook: (path: string) =>
-    request<{ valid: boolean; output: string }>('/api/v1/playbooks/validate', {
+  playbookConfig: () => request<PlaybookConfigDto>('/api/v1/playbooks/config'),
+  databasePlaybook: (id: string) =>
+    request<DatabasePlaybookDto>(`/api/v1/playbooks/database/${id}`),
+  createDatabasePlaybook: (input: DatabasePlaybookCreateDto) =>
+    request<DatabasePlaybookDto>('/api/v1/playbooks/database', {
       method: 'POST',
-      body: { path },
+      body: input,
+    }),
+  updateDatabasePlaybook: (id: string, input: DatabasePlaybookUpdateDto) =>
+    request<DatabasePlaybookDto>(`/api/v1/playbooks/database/${id}`, {
+      method: 'PUT',
+      body: input,
+    }),
+  deleteDatabasePlaybook: (id: string, version: number) =>
+    request<void>(`/api/v1/playbooks/database/${id}?version=${version}`, {
+      method: 'DELETE',
+    }),
+  validatePlaybook: (input: PlaybookValidationDto) =>
+    request<PlaybookValidationResultDto>('/api/v1/playbooks/validate', {
+      method: 'POST',
+      body: input,
     }),
   systemInfo: () => request<SystemInfoDto>('/api/v1/system/info'),
   systemDoctor: () => request<Record<string, unknown>>('/api/v1/system/doctor'),

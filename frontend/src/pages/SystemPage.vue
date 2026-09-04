@@ -28,6 +28,7 @@ const doctorQuery = useQuery({ queryKey: ['system-doctor'], queryFn: api.systemD
             <div><dt>{{ t('system.version') }}</dt><dd>{{ infoQuery.data.value.version }}</dd></div>
             <div><dt>{{ t('system.database') }}</dt><dd>{{ infoQuery.data.value.database }}</dd></div>
             <div><dt>{{ t('system.queue') }}</dt><dd>{{ infoQuery.data.value.queue }}</dd></div>
+            <div><dt>{{ t('system.playbookSourceMode') }}</dt><dd><code>{{ infoQuery.data.value.playbookSourceMode }}</code></dd></div>
             <div><dt>{{ t('system.workspace') }}</dt><dd><code>{{ infoQuery.data.value.playbookWorkspace }}</code></dd></div>
           </dl>
         </template>

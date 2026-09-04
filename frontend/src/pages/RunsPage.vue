@@ -54,7 +54,18 @@ function duration(run: RunDto): string {
 
 function operation(run: RunDto): string {
   if (run.kind === 'COMMAND') return String(run.operationSpec.command ?? '')
-  if (run.kind === 'PLAYBOOK') return String(run.operationSpec.playbookPath ?? '')
+  if (run.kind === 'PLAYBOOK') {
+    const reference = run.operationSpec.playbook
+    if (reference && typeof reference === 'object' && !Array.isArray(reference)) {
+      const values = reference as Record<string, unknown>
+      if (typeof values.path === 'string') return values.path
+      if (typeof values.playbookId === 'string') {
+        const revision = typeof values.revision === 'number' ? `@${values.revision}` : ''
+        return `database:${values.playbookId.slice(0, 8)}${revision}`
+      }
+    }
+    return String(run.operationSpec.playbookPath ?? '')
+  }
   return 'ansible.builtin.ping'
 }
 

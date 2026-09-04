@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, model_validator
 
 from ops_composer.domain.base import StrictDomainModel
 
@@ -65,6 +65,26 @@ class TargetKind(StrEnum):
 class CommandMode(StrEnum):
     COMMAND = "COMMAND"
     SHELL = "SHELL"
+
+
+class PlaybookSource(StrEnum):
+    DATABASE = "DATABASE"
+    MOUNT = "MOUNT"
+
+
+class PlaybookReference(StrictDomainModel):
+    source: PlaybookSource
+    playbook_id: UUID | None = None
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def require_source_identifier(self) -> PlaybookReference:
+        if self.source is PlaybookSource.DATABASE:
+            if self.playbook_id is None or self.path is not None:
+                raise ValueError("database Playbook references require only playbook_id")
+        elif self.path is None or self.playbook_id is not None:
+            raise ValueError("mounted Playbook references require only path")
+        return self
 
 
 class Credential(StrictDomainModel):
@@ -147,6 +167,8 @@ class Run(StrictDomainModel):
     operation_spec: dict[str, object]
     inventory_snapshot: dict[str, object]
     workspace_revision: str | None = None
+    playbook_id: UUID | None = None
+    playbook_revision: int | None = Field(default=None, ge=1)
     credential_versions: dict[str, object]
     timeout_seconds: int
     forks: int
@@ -198,11 +220,53 @@ class RunEvent(StrictDomainModel):
 
 
 class Playbook(StrictDomainModel):
-    path: str
+    source: PlaybookSource = PlaybookSource.MOUNT
+    playbook_id: UUID | None = None
+    path: str | None = None
     name: str
+    description: str = ""
+    enabled: bool = True
+    editable: bool = False
+    revision: int | None = Field(default=None, ge=1)
+    version: int | None = Field(default=None, ge=1)
     size: int = Field(ge=0)
     modified_at: datetime
     sha256: str
+
+
+class DatabasePlaybook(StrictDomainModel):
+    playbook_id: UUID
+    name: str
+    description: str
+    enabled: bool
+    current_revision: int = Field(ge=1)
+    version: int = Field(ge=1)
+    created_by: UUID
+    updated_by: UUID
+    deleted_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlaybookRevision(StrictDomainModel):
+    model_config = ConfigDict(
+        **{**StrictDomainModel.model_config, "str_strip_whitespace": False}
+    )
+
+    playbook_id: UUID
+    revision: int = Field(ge=1)
+    content: str = Field(repr=False)
+    sha256: str
+    size_bytes: int = Field(ge=1, le=1024 * 1024)
+    validator_version: str
+    validated_at: datetime
+    created_by: UUID
+    created_at: datetime
+
+
+class DatabasePlaybookDocument(StrictDomainModel):
+    playbook: DatabasePlaybook
+    revision: PlaybookRevision
 
 
 class WorkerLease(StrictDomainModel):

@@ -312,6 +312,9 @@ pre {
 .form-grid.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field { display: grid; align-content: start; gap: .42rem; }
 .field small { color: var(--app-muted); font-size: .72rem; }
+.field-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.field-hint { color: var(--app-muted); font-size: .72rem; }
+.field-error { color: #dc2626 !important; font-weight: 700; }
 .span-2 { grid-column: span 2; }
 .switch-field { display: flex; align-items: center; gap: .65rem; font-size: .86rem; font-weight: 650; }
 .code-input textarea, textarea.code-input { line-height: 1.55; }
@@ -340,6 +343,12 @@ pre {
 .playbook-meta dt { color: var(--app-muted); }
 .playbook-meta dd { margin: 0; }
 .playbook-card .card-actions { justify-content: flex-end; }
+.table-primary { display: grid; gap: .3rem; min-width: 12rem; }
+.table-primary small { max-width: 32rem; color: var(--app-muted); }
+.table-primary code { width: fit-content; max-width: 32rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.playbook-editor { min-height: 28rem; tab-size: 2; white-space: pre; }
+.validation-output { max-height: 14rem; border: 0; background: transparent; color: inherit; padding: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.compact-empty { min-height: 210px; border: 0; }
 .empty-state { min-height: 300px; display: grid; place-content: center; justify-items: center; text-align: center; border: 1px dashed var(--app-border); border-radius: 16px; color: var(--app-muted); }
 .empty-state > i { font-size: 2.4rem; color: var(--app-primary); }
 .empty-state h3 { margin-bottom: 0; color: var(--app-text); }

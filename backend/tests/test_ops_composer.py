@@ -281,6 +281,12 @@ class _RunsRepository:
         self.run_targets: dict[UUID, tuple[RunTarget, ...]] = {}
         self.events: list[RunEvent] = []
 
+    async def get_by_idempotency_key(
+        self, requested_by: UUID, idempotency_key: str
+    ) -> Run | None:
+        existing_id = self.idempotency.get((requested_by, idempotency_key))
+        return self.runs.get(existing_id) if existing_id is not None else None
+
     async def create_or_get(self, run: Run, targets: tuple[RunTarget, ...]) -> tuple[Run, bool]:
         key = (run.requested_by, run.idempotency_key)
         existing_id = self.idempotency.get(key)

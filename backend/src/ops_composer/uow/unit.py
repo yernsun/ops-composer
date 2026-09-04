@@ -14,6 +14,7 @@ from ops_composer.repositories.assets import PostgresAssetRepository
 from ops_composer.repositories.audit import PostgresAuditRepository
 from ops_composer.repositories.base import RepositoryConnection
 from ops_composer.repositories.health import PostgresHealthRepository
+from ops_composer.repositories.playbooks import PostgresPlaybookRepository
 from ops_composer.repositories.runs import PostgresRunRepository
 
 EXPECTED_MIGRATION_CHECKSUMS = {
@@ -89,6 +90,12 @@ class UnitOfWork:
         """Return durable queue, execution, Lease, lock, and event persistence."""
 
         return PostgresRunRepository(self._require_connection())
+
+    @cached_property
+    def playbooks(self) -> PostgresPlaybookRepository:
+        """Return database-backed Playbook and immutable revision persistence."""
+
+        return PostgresPlaybookRepository(self._require_connection())
 
     @cached_property
     def audit(self) -> PostgresAuditRepository:

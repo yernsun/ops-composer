@@ -76,6 +76,8 @@ def _ops_action(error: OpsError) -> AuditAction:
         "host_key_changed": AuditAction.HOST_KEY_CHANGED,
         "host_key_confirmation_required": AuditAction.RUN_TARGET_RESOLUTION_FAILED,
         "run_not_cancelable": AuditAction.RUN_CANCEL_REJECTED,
+        "playbook_invalid": AuditAction.PLAYBOOK_VALIDATION_FAILED,
+        "playbook_source_disabled": AuditAction.PLAYBOOK_SOURCE_DISABLED,
     }.get(error.code, AuditAction.REQUEST_REJECTED)
 
 
