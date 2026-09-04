@@ -1,30 +1,30 @@
 from __future__ import annotations
 
-import json
-import logging
-import re
 import time
-from contextvars import ContextVar, Token
-from datetime import UTC, datetime
 from uuid import uuid4
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-_REQUEST_ID = ContextVar[str | None]("request_id", default=None)
-_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_LOG_FIELDS = (
-    "event",
-    "request_id",
-    "method",
-    "path",
-    "status",
-    "duration_ms",
-    "validation_errors",
+from ops_composer.domain.audit import AuditAction, AuditOutcome, AuditSeverity, AuditSource
+from ops_composer.observability import (
+    JsonLogFormatter,
+    allow_rate_limited_event,
+    bind_log_context,
+    configure_logging,
+    current_request_id,
+    log_context,
+    log_event,
+    valid_request_id,
 )
+from ops_composer.services.audit import AuditService, emit_audit_event, new_audit_event
 
-
-def current_request_id() -> str | None:
-    return _REQUEST_ID.get()
+__all__ = (
+    "JsonLogFormatter",
+    "RequestContextMiddleware",
+    "bind_log_context",
+    "configure_logging",
+    "current_request_id",
+)
 
 
 def _request_id(headers: list[tuple[bytes, bytes]]) -> str:
@@ -35,49 +35,14 @@ def _request_id(headers: list[tuple[bytes, bytes]]) -> str:
         candidate = values[0].decode("ascii")
     except UnicodeDecodeError:
         return uuid4().hex
-    if _SAFE_REQUEST_ID.fullmatch(candidate):
-        return candidate
-    return uuid4().hex
-
-
-class JsonLogFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, object] = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        for field in _LOG_FIELDS:
-            value = getattr(record, field, None)
-            if value is not None:
-                payload[field] = value
-        if record.exc_info and record.exc_info[0] is not None:
-            payload["exception"] = record.exc_info[0].__name__
-        return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
-
-
-def configure_logging() -> None:
-    """Install one JSON handler for application-owned loggers."""
-
-    logger = logging.getLogger("app")
-    if any(getattr(handler, "_project_forge_json", False) for handler in logger.handlers):
-        return
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonLogFormatter())
-    handler._project_forge_json = True  # type: ignore[attr-defined]
-    logger.handlers.clear()
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
+    return candidate if valid_request_id(candidate) else uuid4().hex
 
 
 class RequestContextMiddleware:
-    """Attach a safe request ID and emit body-free structured access logs."""
+    """Attach safe correlation context and emit body-free structured access logs."""
 
     def __init__(self, app: ASGIApp) -> None:
         self._app = app
-        self._logger = logging.getLogger("app.access")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -85,7 +50,6 @@ class RequestContextMiddleware:
             return
 
         request_id = _request_id(scope.get("headers", []))
-        token: Token[str | None] = _REQUEST_ID.set(request_id)
         started = time.perf_counter()
         status_code = 500
 
@@ -99,30 +63,63 @@ class RequestContextMiddleware:
                 message["headers"] = headers
             await send(message)
 
-        try:
-            await self._app(scope, receive, send_with_request_id)
-        except BaseException:
-            self._logger.exception(
-                "request failed",
-                extra={
-                    "event": "request_failed",
-                    "request_id": request_id,
-                    "method": scope.get("method"),
-                    "path": scope.get("path"),
-                },
-            )
-            raise
-        finally:
-            duration_ms = round((time.perf_counter() - started) * 1000, 3)
-            self._logger.info(
-                "request completed",
-                extra={
-                    "event": "request_completed",
-                    "request_id": request_id,
-                    "method": scope.get("method"),
-                    "path": scope.get("path"),
-                    "status": status_code,
-                    "duration_ms": duration_ms,
-                },
-            )
-            _REQUEST_ID.reset(token)
+        with log_context(
+            request_id=request_id,
+            correlation_id=request_id,
+            actor_user_id=None,
+            session_id=None,
+            run_id=None,
+            run_target_id=None,
+            worker_id=None,
+        ):
+            try:
+                await self._app(scope, receive, send_with_request_id)
+            except Exception as error:
+                event = new_audit_event(
+                    AuditAction.UNHANDLED_EXCEPTION,
+                    AuditOutcome.FAILED,
+                    source=AuditSource.API,
+                    severity=AuditSeverity.ERROR,
+                    failure_stage="request_dispatch",
+                    exception_type=type(error).__name__,
+                    retryable=False,
+                )
+                application = scope.get("app")
+                factory = getattr(
+                    getattr(application, "state", None),
+                    "unit_of_work_factory",
+                    None,
+                )
+                if factory is not None:
+                    await AuditService(factory).record_best_effort(event)
+                else:
+                    emit_audit_event(event, exc_info=True)
+                raise
+            finally:
+                duration_ms = round((time.perf_counter() - started) * 1000, 3)
+                route = scope.get("route")
+                route_path = getattr(route, "path", None)
+                path = route_path if isinstance(route_path, str) else "<unmatched>"
+                severity = (
+                    AuditSeverity.DEBUG
+                    if status_code < 400 and path in {"/health/live", "/health/ready"}
+                    else AuditSeverity.WARNING
+                    if status_code >= 400
+                    else AuditSeverity.INFO
+                )
+                if not (
+                    path == "/health/ready"
+                    and status_code >= 500
+                    and not allow_rate_limited_event("health-ready-failed")
+                ):
+                    log_event(
+                        AuditAction.REQUEST_COMPLETED,
+                        AuditOutcome.SUCCEEDED if status_code < 400 else AuditOutcome.FAILED,
+                        source=AuditSource.API,
+                        severity=severity,
+                        message="request completed",
+                        method=scope.get("method"),
+                        path=path,
+                        status=status_code,
+                        duration_ms=duration_ms,
+                    )

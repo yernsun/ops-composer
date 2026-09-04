@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import socket
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -20,9 +21,22 @@ import yaml
 from ops_composer.db.migration_engine import MigrationRunner
 from ops_composer.db.pool import create_pool
 from ops_composer.db.registry import MIGRATIONS
+from ops_composer.domain.audit import (
+    AuditAction,
+    AuditOutcome,
+    AuditSeverity,
+    AuditSource,
+)
 from ops_composer.domain.errors import OpsError
 from ops_composer.domain.ops import Run, RunStatus, RunTarget, RunTargetStatus
+from ops_composer.observability import (
+    configure_logging,
+    log_context,
+    log_event,
+    safe_exception_fields,
+)
 from ops_composer.services.assets import AssetService, CredentialService
+from ops_composer.services.audit import AuditService, new_audit_event
 from ops_composer.services.crypto import CredentialCipher, redact_secrets
 from ops_composer.services.playbooks import PlaybookCatalog
 from ops_composer.services.runs import RunService, WorkerCoordinator
@@ -100,10 +114,11 @@ class RuntimeDirectory:
             shutil.rmtree(self.path)
 
 
-def cleanup_orphan_runtime(root: Path) -> None:
+def cleanup_orphan_runtime(root: Path) -> int:
     resolved = root.resolve()
     if not resolved.is_dir():
-        return
+        return 0
+    removed = 0
     for child in resolved.iterdir():
         try:
             UUID(child.name)
@@ -111,6 +126,8 @@ def cleanup_orphan_runtime(root: Path) -> None:
             continue
         if child.is_dir() and child.parent == resolved:
             shutil.rmtree(child)
+            removed += 1
+    return removed
 
 
 class AnsibleExecutor:
@@ -261,6 +278,7 @@ async def execute_run(
         CredentialCipher(settings.master_key.get_secret_value(), settings.master_key_version),
     )
     assets = AssetService(factory)
+    audit_service = AuditService(factory)
     try:
         _, targets = await run_service.detail(run.run_id)
         if run.kind.value == "PLAYBOOK":
@@ -271,6 +289,26 @@ async def execute_run(
         inventory, secret_values = await _runtime_inventory(run, credentials)
         known_hosts = await _known_hosts(run, assets)
     except (OpsError, ValueError, KeyError) as error:
+        await audit_service.record_best_effort(
+            new_audit_event(
+                AuditAction.RUN_PREPARATION_FAILED,
+                AuditOutcome.FAILED,
+                source=AuditSource.WORKER,
+                severity=AuditSeverity.WARNING,
+                run_id=run.run_id,
+                worker_id=coordinator.worker_id,
+                resource_type="run",
+                resource_id=run.run_id,
+                error_code=(error.code if isinstance(error, OpsError) else "PREPARATION_FAILED"),
+                exception_type=type(error).__name__,
+                failure_stage="run_preparation",
+                retryable=False,
+                metadata={
+                    "operation_kind": run.kind.value,
+                    "target_count": len(run.resolved_targets),
+                },
+            )
+        )
         await coordinator.append_event(
             run.run_id,
             event_type="run_rejected",
@@ -282,7 +320,9 @@ async def execute_run(
             return_code=None,
             summary={},
             failure_code="PREPARATION_FAILED",
-            failure_message=str(error),
+            failure_message="run preparation failed",
+            exception_type=type(error).__name__,
+            failure_stage="run_preparation",
         )
         return
 
@@ -294,6 +334,7 @@ async def execute_run(
     event_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
     cancel = Event()
+    runtime_path: Path | None = None
 
     def event_handler(raw_event: dict[str, Any]) -> bool:
         sanitized = _sanitize(raw_event, secret_values)
@@ -311,6 +352,19 @@ async def execute_run(
 
     try:
         with RuntimeDirectory(settings.runtime_dir, run.run_id) as runtime:
+            runtime_path = runtime.path
+            await audit_service.record_best_effort(
+                new_audit_event(
+                    AuditAction.RUNTIME_DIRECTORY_CREATED,
+                    AuditOutcome.SUCCEEDED,
+                    source=AuditSource.WORKER,
+                    run_id=run.run_id,
+                    worker_id=coordinator.worker_id,
+                    resource_type="run",
+                    resource_id=run.run_id,
+                    metadata={"file_mode": "0700"},
+                )
+            )
             inventory_path = runtime.write(
                 "inventory.yml",
                 yaml.safe_dump(inventory, allow_unicode=True, sort_keys=True),
@@ -330,6 +384,12 @@ async def execute_run(
             )
             monitor_task = asyncio.create_task(monitor(execution))
             while not execution.done() or not event_queue.empty():
+                if monitor_task.done() and not monitor_task.cancelled():
+                    monitor_error = monitor_task.exception()
+                    if monitor_error is not None:
+                        cancel.set()
+                        await execution
+                        raise monitor_error
                 try:
                     event = await asyncio.wait_for(event_queue.get(), timeout=0.25)
                 except TimeoutError:
@@ -378,7 +438,7 @@ async def execute_run(
             monitor_task.cancel()
             await asyncio.gather(monitor_task, return_exceptions=True)
     except Exception as error:
-        safe_message = redact_secrets(str(error), secret_values)
+        safe_message = "runner execution failed"
         await coordinator.append_event(
             run.run_id,
             event_type="runner_error",
@@ -391,8 +451,30 @@ async def execute_run(
             summary={},
             failure_code="RUNNER_ERROR",
             failure_message=safe_message,
+            exception_type=type(error).__name__,
+            failure_stage="runner_execution",
         )
         return
+    finally:
+        if runtime_path is not None:
+            cleaned = not runtime_path.exists()
+            await audit_service.record_best_effort(
+                new_audit_event(
+                    AuditAction.RUNTIME_DIRECTORY_CLEANED,
+                    AuditOutcome.SUCCEEDED if cleaned else AuditOutcome.FAILED,
+                    source=AuditSource.WORKER,
+                    severity=(
+                        AuditSeverity.INFO if cleaned else AuditSeverity.ERROR
+                    ),
+                    run_id=run.run_id,
+                    worker_id=coordinator.worker_id,
+                    resource_type="run",
+                    resource_id=run.run_id,
+                    error_code=None if cleaned else "runtime_cleanup_failed",
+                    failure_stage=None if cleaned else "runtime_cleanup",
+                    retryable=False if not cleaned else None,
+                )
+            )
 
     success_count = 0
     failure_count = 0
@@ -406,7 +488,10 @@ async def execute_run(
         else:
             failure_count += 1
         await coordinator.finish_target(
+            run.run_id,
             accumulator.target.run_target_id,
+            host_id=accumulator.target.host_id,
+            host_name=accumulator.target.host_name,
             status=accumulator.status,
             return_code=rc,
             stdout="".join(accumulator.chunks),
@@ -439,30 +524,277 @@ async def execute_run(
     )
 
 
-async def run_worker(settings: Settings) -> None:
-    pool = create_pool(settings.database_url)
-    await pool.open()
+async def _purge_expired_audit(
+    factory: UnitOfWorkFactory,
+    settings: Settings,
+    *,
+    worker_id: str,
+) -> None:
+    service = AuditService(factory)
+    purged = 0
+    acquired = True
     try:
-        async with pool.connection() as connection:
-            await MigrationRunner(connection, MIGRATIONS).validate_current()
-        factory = UnitOfWorkFactory(pool)
-        cipher = CredentialCipher(
-            settings.master_key.get_secret_value(), settings.master_key_version
-        )
-        await CredentialService(factory, cipher).ensure_master_key()
-        cleanup_orphan_runtime(settings.runtime_dir)
-        worker_id = (
-            os.environ.get("OPS_COMPOSER_WORKER_ID")
-            or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        )
-        coordinator = WorkerCoordinator(factory, settings, worker_id)
-        await coordinator.recover_stale()
         while True:
-            await coordinator.heartbeat()
-            run = await coordinator.claim()
-            if run is None:
-                await asyncio.sleep(settings.worker_poll_interval_seconds)
-                continue
-            await execute_run(run, factory=factory, settings=settings, coordinator=coordinator)
+            acquired, count = await service.purge_batch(settings.audit_retention_days)
+            if not acquired or count == 0:
+                break
+            purged += count
+    except Exception as error:
+        log_event(
+            AuditAction.AUDIT_RETENTION_PURGED,
+            AuditOutcome.FAILED,
+            source=AuditSource.WORKER,
+            severity=AuditSeverity.ERROR,
+            message="audit retention cleanup failed",
+            worker_id=worker_id,
+            error_code="audit_retention_failed",
+            exception_type=type(error).__name__,
+            failure_stage="audit_retention",
+            retryable=True,
+            metadata=safe_exception_fields(error),
+            exc_info=True,
+        )
+        return
+    if purged:
+        await service.record_best_effort(
+            new_audit_event(
+                AuditAction.AUDIT_RETENTION_PURGED,
+                AuditOutcome.SUCCEEDED,
+                source=AuditSource.WORKER,
+                worker_id=worker_id,
+                metadata={
+                    "purged_count": purged,
+                    "retention_days": settings.audit_retention_days,
+                },
+            )
+        )
+    elif not acquired:
+        log_event(
+            AuditAction.AUDIT_RETENTION_PURGED,
+            AuditOutcome.NOOP,
+            source=AuditSource.WORKER,
+            severity=AuditSeverity.DEBUG,
+            message="audit retention cleanup lock is busy",
+            worker_id=worker_id,
+        )
+
+
+async def run_worker(settings: Settings) -> None:
+    configure_logging(
+        service="worker",
+        environment=settings.app_env.value,
+        level=settings.log_level.value,
+    )
+    worker_id = (
+        os.environ.get("OPS_COMPOSER_WORKER_ID")
+        or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    )
+    log_event(
+        AuditAction.WORKER_STARTED,
+        AuditOutcome.STARTED,
+        source=AuditSource.WORKER,
+        message="worker process is starting",
+        worker_id=worker_id,
+    )
+    pool = create_pool(settings.database_url)
+    try:
+        await pool.open()
+    except Exception as error:
+        log_event(
+            AuditAction.DATABASE_UNAVAILABLE,
+            AuditOutcome.FAILED,
+            source=AuditSource.WORKER,
+            severity=AuditSeverity.CRITICAL,
+            message="worker could not open the PostgreSQL connection pool",
+            worker_id=worker_id,
+            failure_stage="database_pool_open",
+            retryable=True,
+            exception_type=type(error).__name__,
+            metadata=safe_exception_fields(error),
+            exc_info=True,
+        )
+        raise
+    factory: UnitOfWorkFactory | None = None
+    try:
+        with log_context(worker_id=worker_id, correlation_id=worker_id):
+            try:
+                async with pool.connection() as connection:
+                    await MigrationRunner(connection, MIGRATIONS).validate_current()
+            except Exception as error:
+                log_event(
+                    AuditAction.MIGRATION_VALIDATION_FAILED,
+                    AuditOutcome.FAILED,
+                    source=AuditSource.WORKER,
+                    severity=AuditSeverity.CRITICAL,
+                    message="worker migration validation failed",
+                    failure_stage="migration_validation",
+                    retryable=False,
+                    exception_type=type(error).__name__,
+                    metadata=safe_exception_fields(error),
+                    exc_info=True,
+                )
+                raise
+            factory = UnitOfWorkFactory(pool)
+            cipher = CredentialCipher(
+                settings.master_key.get_secret_value(), settings.master_key_version
+            )
+            try:
+                await CredentialService(factory, cipher).ensure_master_key()
+            except Exception as error:
+                await AuditService(factory).record_best_effort(
+                    new_audit_event(
+                        AuditAction.MASTER_KEY_VALIDATION_FAILED,
+                        AuditOutcome.FAILED,
+                        source=AuditSource.WORKER,
+                        severity=AuditSeverity.CRITICAL,
+                        worker_id=worker_id,
+                        failure_stage="master_key_validation",
+                        retryable=False,
+                        exception_type=type(error).__name__,
+                        metadata=safe_exception_fields(error),
+                    )
+                )
+                raise
+            orphan_count = cleanup_orphan_runtime(settings.runtime_dir)
+            if orphan_count:
+                await AuditService(factory).record_best_effort(
+                    new_audit_event(
+                        AuditAction.RUNTIME_DIRECTORY_CLEANED,
+                        AuditOutcome.SUCCEEDED,
+                        source=AuditSource.WORKER,
+                        worker_id=worker_id,
+                        metadata={"orphan_count": orphan_count},
+                    )
+                )
+            coordinator = WorkerCoordinator(factory, settings, worker_id)
+            await coordinator.recover_stale()
+            await _purge_expired_audit(factory, settings, worker_id=worker_id)
+            await AuditService(factory).record_best_effort(
+                new_audit_event(
+                    AuditAction.WORKER_READY,
+                    AuditOutcome.SUCCEEDED,
+                    source=AuditSource.WORKER,
+                    worker_id=worker_id,
+                )
+            )
+            next_cleanup = time.monotonic() + 86_400
+            failure_count = 0
+            first_failure_at: float | None = None
+            last_failure_log_at = 0.0
+            while True:
+                active_run: Run | None = None
+                try:
+                    if time.monotonic() >= next_cleanup:
+                        await _purge_expired_audit(factory, settings, worker_id=worker_id)
+                        next_cleanup = time.monotonic() + 86_400
+                    await coordinator.heartbeat()
+                    active_run = await coordinator.claim()
+                    if active_run is None:
+                        await asyncio.sleep(settings.worker_poll_interval_seconds)
+                    else:
+                        with log_context(
+                            run_id=active_run.run_id,
+                            correlation_id=str(active_run.run_id),
+                        ):
+                            await execute_run(
+                                active_run,
+                                factory=factory,
+                                settings=settings,
+                                coordinator=coordinator,
+                            )
+                    if first_failure_at is not None:
+                        elapsed_ms = round((time.monotonic() - first_failure_at) * 1000, 3)
+                        await AuditService(factory).record_best_effort(
+                            new_audit_event(
+                                AuditAction.DATABASE_RECOVERED,
+                                AuditOutcome.SUCCEEDED,
+                                source=AuditSource.WORKER,
+                                worker_id=worker_id,
+                                duration_ms=elapsed_ms,
+                                metadata={"failure_count": failure_count},
+                            )
+                        )
+                        failure_count = 0
+                        first_failure_at = None
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    now = time.monotonic()
+                    failure_count += 1
+                    if first_failure_at is None:
+                        first_failure_at = now
+                    database_error = bool(getattr(error, "sqlstate", None)) or any(
+                        token in type(error).__name__.casefold()
+                        for token in ("database", "operational", "pool", "connection")
+                    )
+                    if now - last_failure_log_at >= 60 or failure_count == 1:
+                        log_event(
+                            (
+                                AuditAction.DATABASE_UNAVAILABLE
+                                if database_error
+                                else AuditAction.WORKER_LOOP_FAILED
+                            ),
+                            AuditOutcome.FAILED,
+                            source=AuditSource.WORKER,
+                            severity=AuditSeverity.ERROR,
+                            message="worker loop iteration failed",
+                            worker_id=worker_id,
+                            run_id=active_run.run_id if active_run is not None else None,
+                            failure_stage="worker_loop",
+                            retryable=True,
+                            exception_type=type(error).__name__,
+                            metadata={
+                                **safe_exception_fields(error),
+                                "failure_count": failure_count,
+                            },
+                            exc_info=True,
+                        )
+                        last_failure_log_at = now
+                    if active_run is not None:
+                        try:
+                            await coordinator.finish(
+                                active_run.run_id,
+                                status=RunStatus.INTERRUPTED,
+                                return_code=None,
+                                summary={},
+                                failure_code="WORKER_LOOP_ERROR",
+                                failure_message="worker loop failed during execution",
+                                exception_type=type(error).__name__,
+                                failure_stage="worker_loop",
+                            )
+                        except Exception as finish_error:
+                            log_event(
+                                AuditAction.RUN_INTERRUPTED,
+                                AuditOutcome.FAILED,
+                                source=AuditSource.WORKER,
+                                severity=AuditSeverity.CRITICAL,
+                                message="worker could not persist interrupted run state",
+                                worker_id=worker_id,
+                                run_id=active_run.run_id,
+                                failure_stage="run_interruption_persistence",
+                                retryable=True,
+                                exception_type=type(finish_error).__name__,
+                                metadata=safe_exception_fields(finish_error),
+                                exc_info=True,
+                            )
+                            raise
+                    await asyncio.sleep(min(30.0, 2.0 ** min(failure_count, 4)))
     finally:
+        if factory is not None:
+            try:
+                await AuditService(factory).record_best_effort(
+                    new_audit_event(
+                        AuditAction.WORKER_STOPPED,
+                        AuditOutcome.SUCCEEDED,
+                        source=AuditSource.WORKER,
+                        worker_id=worker_id,
+                    )
+                )
+            except asyncio.CancelledError:
+                log_event(
+                    AuditAction.WORKER_STOPPED,
+                    AuditOutcome.SUCCEEDED,
+                    source=AuditSource.WORKER,
+                    worker_id=worker_id,
+                )
         await pool.close()

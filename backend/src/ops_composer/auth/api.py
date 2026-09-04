@@ -18,6 +18,7 @@ from ops_composer.auth.errors import (
 from ops_composer.auth.models import IssuedSession, SessionPrincipal
 from ops_composer.auth.service import AuthService
 from ops_composer.domain.base import to_camel
+from ops_composer.observability import bind_log_context
 from ops_composer.settings import Settings, get_settings
 
 
@@ -140,7 +141,12 @@ async def get_current_session(
     session_token = request.cookies.get(get_settings().session_cookie_name)
     if not session_token:
         raise AuthenticationRequiredError()
-    return await _service(unit_of_work_factory).resolve(session_token)
+    principal = await _service(unit_of_work_factory).resolve(session_token)
+    bind_log_context(
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+    )
+    return principal
 
 
 CurrentSessionDep = Annotated[SessionPrincipal, Depends(get_current_session)]

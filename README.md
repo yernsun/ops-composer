@@ -10,6 +10,10 @@ SQLAlchemy, or standalone Nginx service.
 The UI uses Vue 3, TypeScript, PrimeVue 4, Vue Router, and vue-i18n. The backend uses FastAPI,
 Psycopg 3 async pools, Ansible Runner, Argon2id, and AES-256-GCM.
 
+API, worker, CLI, migration, and Uvicorn output is single-line JSON. Durable business audit events
+are stored in PostgreSQL, are immutable except for retention deletion, and are kept for 180 days by
+default. No external logging or audit service is required.
+
 ## Project Forge provenance
 
 The repository was upgraded from exact upstream Project Forge commit
@@ -41,6 +45,28 @@ Back up `OPS_COMPOSER_MASTER_KEY`: losing or changing it makes existing credenti
 and startup fails closed. Percent-encode reserved password characters in `DATABASE_URL`. The API
 binds to `127.0.0.1:8080` by default and expects deployment-owned TLS termination. `playbooks/` is
 mounted read-only as the Playbook workspace.
+
+## Operational logs and audit
+
+Set `APP_LOG_LEVEL` to `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Compose uses Docker's `local` logging
+driver with `20m × 10` rotation. Structured logs and audit metadata exclude command bodies,
+passwords, cookies, tokens, the master key, database URLs, complete inventories, and raw Ansible
+payloads. Configure retention with `OPS_COMPOSER_AUDIT_RETENTION_DAYS` (`1..3650`).
+
+Audit access is intentionally CLI-only:
+
+```bash
+docker compose run --rm api ops-composer audit list --jsonl
+docker compose run --rm api ops-composer audit list --action RUN_FAILED --limit 50
+docker compose run --rm api ops-composer audit export \
+  --since 2026-09-01T00:00:00Z --until 2026-09-02T00:00:00Z \
+  --output /tmp/ops-composer-audit.jsonl
+docker compose run --rm api ops-composer audit purge             # dry run
+docker compose run --rm api ops-composer audit purge --execute   # use configured retention
+```
+
+Exports are created with mode `0600` and refuse overwrite unless `--force` is explicit. Keep them
+outside the repository and shared directories.
 
 ## Development
 

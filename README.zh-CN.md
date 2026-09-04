@@ -30,6 +30,7 @@ Psycopg 3 async pool、Ansible Runner、Argon2id 和 AES-256-GCM。
   `sourceRunId` 的新 Run。
 - PostgreSQL `FOR UPDATE SKIP LOCKED` 队列、Lease 失联恢复和按 Host 串行锁。
 - 持久化 RunEvent、可按 sequence 回放的 SSE、取消、超时、输出截断和秘密脱敏。
+- 单行 JSON 实时日志与 PostgreSQL 不可变业务审计；默认保留 180 天并由 Worker 每日清理。
 - PrimeVue 响应式管理界面：概览、主机、分组、凭据、命令、Playbook、执行历史、详情和系统页。
 
 ## 生产 Compose
@@ -50,6 +51,29 @@ docker compose run --rm api ops-composer admin bootstrap --username admin
 `OPS_COMPOSER_MASTER_KEY` 必须稳定备份；更换或丢失该密钥会使已有凭据不可解密，应用将
 fail closed。`DATABASE_URL` 中密码的保留字符必须进行 URL 编码。默认只把 API 暴露到
 `127.0.0.1:8080`，应由部署方提供 TLS 终止。
+
+## 业务日志与审计
+
+API、Worker、CLI、Migration 和 Uvicorn 均向 stdout 输出单行 JSON；Compose 使用 Docker
+`local` 日志驱动并按 `20m × 10` 轮转。日志只记录动作、结果、关联 ID、耗时、安全错误码和
+受控 metadata，不记录命令正文、密码、Cookie、Token、Master Key、数据库 URL、完整
+Inventory 或 Ansible 原始载荷。`APP_LOG_LEVEL` 支持 `DEBUG/INFO/WARNING/ERROR`。
+
+关键业务事件同时写入 PostgreSQL `audit_events`，默认保留 180 天，可通过
+`OPS_COMPOSER_AUDIT_RETENTION_DAYS=1..3650` 调整。审计仅由本机受控 CLI 访问：
+
+```bash
+docker compose run --rm api ops-composer audit list --jsonl
+docker compose run --rm api ops-composer audit list --action RUN_FAILED --limit 50
+docker compose run --rm api ops-composer audit export \
+  --since 2026-09-01T00:00:00Z --until 2026-09-02T00:00:00Z \
+  --output /tmp/ops-composer-audit.jsonl
+docker compose run --rm api ops-composer audit purge             # dry-run
+docker compose run --rm api ops-composer audit purge --execute   # 按保留期清理
+```
+
+导出文件权限固定为 `0600`，默认拒绝覆盖；需要覆盖时显式传入 `--force`。请将导出文件放在
+仓库和共享目录之外。
 
 Playbook 默认从根目录 `playbooks/` 只读挂载。不得挂载 Docker Socket。
 

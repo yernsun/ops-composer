@@ -21,12 +21,20 @@ class AppEnvironment(StrEnum):
     PRODUCTION = "production"
 
 
+class AppLogLevel(StrEnum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+
 class Settings(BaseSettings):
     """Validated process configuration shared by the API, CLI, and worker."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     app_env: AppEnvironment = Field(default=AppEnvironment.DEVELOPMENT, validation_alias="APP_ENV")
+    log_level: AppLogLevel = Field(default=AppLogLevel.INFO, validation_alias="APP_LOG_LEVEL")
     database_url: str = Field(default=DEVELOPMENT_DATABASE_URL, validation_alias="DATABASE_URL")
     allowed_origins_csv: str = Field(
         default="http://localhost:5173", validation_alias="APP_ALLOWED_ORIGINS"
@@ -107,6 +115,12 @@ class Settings(BaseSettings):
         ge=64 * 1024,
         le=100 * 1024 * 1024,
         validation_alias="OPS_COMPOSER_MAX_RUN_OUTPUT_BYTES",
+    )
+    audit_retention_days: int = Field(
+        default=180,
+        ge=1,
+        le=3650,
+        validation_alias="OPS_COMPOSER_AUDIT_RETENTION_DAYS",
     )
 
     @model_validator(mode="after")
@@ -199,6 +213,8 @@ class Settings(BaseSettings):
             "environment": self.app_env.value,
             "database": "postgresql",
             "database_configured": bool(self.database_url),
+            "log_level": self.log_level.value,
+            "audit_retention_days": self.audit_retention_days,
             "playbook_workspace": str(self.playbook_workspace),
             "runtime_dir": str(self.runtime_dir),
             "authentication": {

@@ -8,6 +8,12 @@ import re
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from ops_composer.domain.audit import (
+    AuditAction,
+    AuditOutcome,
+    AuditSeverity,
+    AuditSource,
+)
 from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     ConflictError,
@@ -25,6 +31,7 @@ from ops_composer.domain.ops import (
     ResolvedHost,
     TargetKind,
 )
+from ops_composer.services.audit import AuditService, emit_audit_event, new_audit_event
 from ops_composer.services.crypto import CredentialCipher
 from ops_composer.uow.factory import UnitOfWorkFactory
 
@@ -74,15 +81,23 @@ def _validate_address(address: str) -> str:
 
 
 class CredentialService:
-    def __init__(self, unit_of_work_factory: UnitOfWorkFactory, cipher: CredentialCipher) -> None:
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        cipher: CredentialCipher,
+        *,
+        audit_source: AuditSource = AuditSource.API,
+    ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._cipher = cipher
+        self._audit_source = audit_source
 
     async def list(self) -> tuple[Credential, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
             return await unit_of_work.assets.list_credentials()
 
     async def ensure_master_key(self) -> None:
+        event = None
         async with self._unit_of_work_factory() as unit_of_work:
             check = await unit_of_work.assets.get_setting("encryption.master-key-check")
             if check is None:
@@ -94,12 +109,28 @@ class CredentialService:
                     },
                     utc_now(),
                 )
-                return
-            envelope = check.get("envelope")
-            version = check.get("version")
-            if not isinstance(envelope, str) or version != self._cipher.key_version:
-                raise ValueError("master-key check metadata is invalid or uses another key version")
-            self._cipher.validate_check(envelope)
+                event = new_audit_event(
+                    AuditAction.MASTER_KEY_INITIALIZED,
+                    AuditOutcome.SUCCEEDED,
+                    source=AuditSource.SYSTEM,
+                    metadata={"key_version": self._cipher.key_version},
+                )
+            else:
+                envelope = check.get("envelope")
+                version = check.get("version")
+                if not isinstance(envelope, str) or version != self._cipher.key_version:
+                    raise ValueError(
+                        "master-key check metadata is invalid or uses another key version"
+                    )
+                self._cipher.validate_check(envelope)
+                event = new_audit_event(
+                    AuditAction.MASTER_KEY_VALIDATED,
+                    AuditOutcome.SUCCEEDED,
+                    source=AuditSource.SYSTEM,
+                    metadata={"key_version": self._cipher.key_version},
+                )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
 
     async def get(self, credential_id: UUID) -> Credential:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -153,8 +184,24 @@ class CredentialService:
             encryption_key_version=self._cipher.key_version,
             created_at=now,
         )
+        event = new_audit_event(
+            AuditAction.CREDENTIAL_CREATED,
+            AuditOutcome.SUCCEEDED,
+            source=self._audit_source,
+            resource_type="credential",
+            resource_id=credential_id,
+            metadata={
+                "credential_name": credential.name,
+                "credential_type": credential.credential_type.value,
+                "version": 1,
+                "become_enabled": become_enabled,
+            },
+        )
         async with self._unit_of_work_factory() as unit_of_work:
-            return await unit_of_work.assets.add_credential(credential, revision)
+            created = await unit_of_work.assets.add_credential(credential, revision)
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return created
 
     async def rotate(
         self,
@@ -184,7 +231,17 @@ class CredentialService:
             rotated = await unit_of_work.assets.rotate_credential(credential_id, revision, now)
             if rotated is None:
                 raise NotFoundError("credential not found")
-            return rotated
+            event = new_audit_event(
+                AuditAction.CREDENTIAL_ROTATED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                resource_type="credential",
+                resource_id=credential_id,
+                metadata={"credential_name": rotated.name, "version": version},
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return rotated
 
     async def decrypt_revision(self, credential_id: UUID, version: int) -> dict[str, str]:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -201,14 +258,35 @@ class CredentialService:
             )
 
     async def delete(self, credential_id: UUID) -> None:
+        event = None
         async with self._unit_of_work_factory() as unit_of_work:
+            credential = await unit_of_work.assets.get_credential(credential_id)
             if not await unit_of_work.assets.delete_credential(credential_id, utc_now()):
                 raise ConflictError("credential is missing or is still assigned to a host")
+            event = new_audit_event(
+                AuditAction.CREDENTIAL_DELETED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                resource_type="credential",
+                resource_id=credential_id,
+                metadata={
+                    "credential_name": credential.name if credential is not None else None,
+                    "version": credential.current_version if credential is not None else None,
+                },
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
 
 
 class AssetService:
-    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        *,
+        audit_source: AuditSource = AuditSource.API,
+    ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
+        self._audit_source = audit_source
 
     async def list_hosts(self) -> tuple[Host, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -253,13 +331,30 @@ class AssetService:
             created_at=now,
             updated_at=now,
         )
+        event = new_audit_event(
+            AuditAction.HOST_CREATED,
+            AuditOutcome.SUCCEEDED,
+            source=self._audit_source,
+            resource_type="host",
+            resource_id=host.host_id,
+            metadata={
+                "host_name": host.name,
+                "ssh_port": host.ssh_port,
+                "credential_id": host.credential_id,
+                "enabled": host.enabled,
+            },
+        )
         async with self._unit_of_work_factory() as unit_of_work:
             credential = await unit_of_work.assets.get_credential(credential_id)
             if credential is None or not credential.enabled:
                 raise ValidationError("credential is missing or disabled")
-            return await unit_of_work.assets.add_host(host)
+            created = await unit_of_work.assets.add_host(host)
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return created
 
     async def update_host(self, host_id: UUID, *, expected_version: int, **changes: object) -> Host:
+        event = None
         async with self._unit_of_work_factory() as unit_of_work:
             current = await unit_of_work.assets.get_host(host_id)
             if current is None:
@@ -285,12 +380,40 @@ class AssetService:
             )
             if updated is None:
                 raise ConflictError("host was modified by another request")
-            return updated
+            event = new_audit_event(
+                AuditAction.HOST_UPDATED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                resource_type="host",
+                resource_id=host_id,
+                metadata={
+                    "host_name": updated.name,
+                    "ssh_port": updated.ssh_port,
+                    "version_before": expected_version,
+                    "version_after": updated.version,
+                    "changed_fields": sorted(changes),
+                },
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return updated
 
     async def delete_host(self, host_id: UUID) -> None:
+        event = None
         async with self._unit_of_work_factory() as unit_of_work:
+            host = await unit_of_work.assets.get_host(host_id)
             if not await unit_of_work.assets.delete_host(host_id):
                 raise ConflictError("host is missing or referenced by execution history")
+            event = new_audit_event(
+                AuditAction.HOST_DELETED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                resource_type="host",
+                resource_id=host_id,
+                metadata={"host_name": host.name if host is not None else None},
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
 
     async def list_groups(self) -> tuple[HostGroup, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -317,11 +440,22 @@ class AssetService:
             created_at=now,
             updated_at=now,
         )
+        event = new_audit_event(
+            AuditAction.GROUP_CREATED,
+            AuditOutcome.SUCCEEDED,
+            source=self._audit_source,
+            resource_type="group",
+            resource_id=group.group_id,
+            metadata={"group_name": group.name, "host_count": len(host_ids)},
+        )
         async with self._unit_of_work_factory() as unit_of_work:
             await self._validate_host_ids(unit_of_work.assets, host_ids)
             created = await unit_of_work.assets.add_group(group)
             await unit_of_work.assets.replace_group_members(created.group_id, host_ids, now)
-            return created.model_copy(update={"host_ids": host_ids})
+            result = created.model_copy(update={"host_ids": host_ids})
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return result
 
     async def update_group(
         self,
@@ -335,6 +469,7 @@ class AssetService:
         if not GROUP_NAME.fullmatch(name):
             raise ValidationError("invalid group name")
         _validate_variables(variables)
+        event = None
         async with self._unit_of_work_factory() as unit_of_work:
             current = await unit_of_work.assets.get_group(group_id)
             if current is None:
@@ -354,7 +489,23 @@ class AssetService:
             if updated is None:
                 raise NotFoundError("group not found")
             await unit_of_work.assets.replace_group_members(group_id, host_ids, updated.updated_at)
-            return updated.model_copy(update={"host_ids": host_ids})
+            result = updated.model_copy(update={"host_ids": host_ids})
+            event = new_audit_event(
+                AuditAction.GROUP_UPDATED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                resource_type="group",
+                resource_id=group_id,
+                metadata={
+                    "group_name": result.name,
+                    "host_count_before": len(current.host_ids),
+                    "host_count_after": len(host_ids),
+                    "membership_changed": set(current.host_ids) != set(host_ids),
+                },
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return result
 
     @staticmethod
     async def _validate_host_ids(repository: _HostLister, host_ids: tuple[UUID, ...]) -> None:
@@ -366,9 +517,21 @@ class AssetService:
             raise ValidationError("group contains unknown hosts", details={"hostIds": missing})
 
     async def delete_group(self, group_id: UUID) -> None:
+        event = None
         async with self._unit_of_work_factory() as unit_of_work:
+            group = await unit_of_work.assets.get_group(group_id)
             if not await unit_of_work.assets.delete_group(group_id):
                 raise NotFoundError("group not found")
+            event = new_audit_event(
+                AuditAction.GROUP_DELETED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                resource_type="group",
+                resource_id=group_id,
+                metadata={"group_name": group.name if group is not None else None},
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
 
     async def resolve(
         self,
@@ -404,6 +567,17 @@ class AssetService:
 
     async def scan_host_keys(self, host_id: UUID) -> tuple[dict[str, str], ...]:
         host = await self.get_host(host_id)
+        audit = AuditService(self._unit_of_work_factory)
+        await audit.record_best_effort(
+            new_audit_event(
+                AuditAction.HOST_KEY_SCAN_STARTED,
+                AuditOutcome.STARTED,
+                source=self._audit_source,
+                resource_type="host",
+                resource_id=host_id,
+                metadata={"host_name": host.name, "ssh_port": host.ssh_port},
+            )
+        )
         try:
             process = await asyncio.create_subprocess_exec(
                 "ssh-keyscan",
@@ -417,8 +591,41 @@ class AssetService:
             )
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=8)
         except (FileNotFoundError, TimeoutError) as error:
+            await audit.record_best_effort(
+                new_audit_event(
+                    AuditAction.HOST_KEY_SCAN_FAILED,
+                    AuditOutcome.FAILED,
+                    source=self._audit_source,
+                    severity=AuditSeverity.WARNING,
+                    resource_type="host",
+                    resource_id=host_id,
+                    error_code="host_key_scan_failed",
+                    exception_type=type(error).__name__,
+                    failure_stage="ssh_keyscan",
+                    retryable=True,
+                    metadata={"host_name": host.name, "ssh_port": host.ssh_port},
+                )
+            )
             raise ValidationError("SSH host-key scan failed") from error
         if process.returncode != 0 or not stdout:
+            await audit.record_best_effort(
+                new_audit_event(
+                    AuditAction.HOST_KEY_SCAN_FAILED,
+                    AuditOutcome.FAILED,
+                    source=self._audit_source,
+                    severity=AuditSeverity.WARNING,
+                    resource_type="host",
+                    resource_id=host_id,
+                    error_code="host_key_scan_empty",
+                    failure_stage="ssh_keyscan",
+                    retryable=True,
+                    metadata={
+                        "host_name": host.name,
+                        "ssh_port": host.ssh_port,
+                        "return_code": process.returncode,
+                    },
+                )
+            )
             raise ValidationError("SSH host-key scan returned no keys")
         keys: dict[str, dict[str, str]] = {}
         for line in stdout.decode("utf-8", errors="replace").splitlines():
@@ -439,8 +646,38 @@ class AssetService:
                 "fingerprint": fingerprint,
             }
         if not keys:
+            await audit.record_best_effort(
+                new_audit_event(
+                    AuditAction.HOST_KEY_SCAN_FAILED,
+                    AuditOutcome.FAILED,
+                    source=self._audit_source,
+                    severity=AuditSeverity.WARNING,
+                    resource_type="host",
+                    resource_id=host_id,
+                    error_code="host_key_scan_unusable",
+                    failure_stage="host_key_parse",
+                    retryable=False,
+                    metadata={"host_name": host.name, "ssh_port": host.ssh_port},
+                )
+            )
             raise ValidationError("SSH host-key scan returned no usable keys")
-        return tuple(keys[name] for name in sorted(keys))
+        result = tuple(keys[name] for name in sorted(keys))
+        await audit.record_best_effort(
+            new_audit_event(
+                AuditAction.HOST_KEY_SCAN_SUCCEEDED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                resource_type="host",
+                resource_id=host_id,
+                metadata={
+                    "host_name": host.name,
+                    "ssh_port": host.ssh_port,
+                    "key_count": len(result),
+                    "algorithms": sorted(keys),
+                },
+            )
+        )
+        return result
 
     async def confirm_host_key(
         self, host_id: UUID, *, algorithm: str, fingerprint: str, user_id: UUID
@@ -455,7 +692,26 @@ class AssetService:
             None,
         )
         if match is None:
-            raise HostKeyChangedError("host key changed between scan and confirmation")
+            error = HostKeyChangedError(
+                "host key changed between scan and confirmation"
+            )
+            await AuditService(self._unit_of_work_factory).record_best_effort(
+                new_audit_event(
+                    AuditAction.HOST_KEY_CHANGED,
+                    AuditOutcome.DENIED,
+                    source=self._audit_source,
+                    severity=AuditSeverity.WARNING,
+                    actor_user_id=user_id,
+                    resource_type="host",
+                    resource_id=host_id,
+                    error_code="host_key_changed",
+                    failure_stage="host_key_confirmation",
+                    retryable=False,
+                    metadata={"algorithm": algorithm, "fingerprint": fingerprint},
+                )
+            )
+            error.audit_recorded = True
+            raise error
         host_key = HostKey(
             host_id=host_id,
             algorithm=algorithm,
@@ -464,5 +720,17 @@ class AssetService:
             trusted_by=user_id,
             trusted_at=utc_now(),
         )
+        event = new_audit_event(
+            AuditAction.HOST_KEY_CONFIRMED,
+            AuditOutcome.SUCCEEDED,
+            source=self._audit_source,
+            actor_user_id=user_id,
+            resource_type="host",
+            resource_id=host_id,
+            metadata={"algorithm": algorithm, "fingerprint": fingerprint},
+        )
         async with self._unit_of_work_factory() as unit_of_work:
-            return await unit_of_work.assets.upsert_host_key(host_key)
+            result = await unit_of_work.assets.upsert_host_key(host_key)
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return result

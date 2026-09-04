@@ -28,7 +28,9 @@ from ops_composer.auth.security import (
     token_matches,
     verify_password,
 )
+from ops_composer.domain.audit import AuditAction, AuditEventDraft, AuditOutcome, AuditSource
 from ops_composer.domain.base import utc_now
+from ops_composer.services.audit import emit_audit_event, new_audit_event
 from ops_composer.settings import Settings
 from ops_composer.uow.factory import UnitOfWorkFactory
 from ops_composer.uow.unit import UnitOfWork
@@ -64,10 +66,17 @@ class ConsumedRateLimit:
 
 
 class AuthService:
-    def __init__(self, unit_of_work_factory: UnitOfWorkFactory, settings: Settings) -> None:
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        settings: Settings,
+        *,
+        audit_source: AuditSource = AuditSource.API,
+    ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._settings = settings
         self._session_ttl = timedelta(seconds=settings.session_ttl_seconds)
+        self._audit_source = audit_source
 
     async def bootstrap(self, username: str, password: str) -> UserIdentity:
         normalized = canonical_username(username)
@@ -90,10 +99,21 @@ class AuthService:
             password_hash=password_hash,
             password_updated_at=now,
         )
+        event = new_audit_event(
+            AuditAction.ADMIN_BOOTSTRAPPED,
+            AuditOutcome.SUCCEEDED,
+            source=AuditSource.CLI,
+            actor_user_id=identity.user_id,
+            resource_type="user",
+            resource_id=identity.user_id,
+        )
         async with self._unit_of_work_factory() as unit_of_work:
             if await unit_of_work.auth.count_users() != 0:
                 raise AdminAlreadyExistsError()
-            return await unit_of_work.auth.add_admin(identity, credential)
+            created = await unit_of_work.auth.add_admin(identity, credential)
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return created
 
     async def _issue(self, unit_of_work: UnitOfWork, user: UserIdentity) -> IssuedSession:
         session_token = generate_token()
@@ -144,7 +164,15 @@ class AuthService:
         )
         if consumed.count > consumed.maximum:
             retry_after = max(1, math.ceil((consumed.reset_at - now).total_seconds()))
-            raise AuthRateLimitedError(retry_after_seconds=retry_after)
+            error = AuthRateLimitedError(retry_after_seconds=retry_after)
+            error.audit_metadata = {
+                "scope": consumed.scope,
+                "subject_hash": consumed.subject_hash,
+                "count": consumed.count,
+                "limit": consumed.maximum,
+                "retry_after_seconds": retry_after,
+            }
+            raise error
         return consumed
 
     async def login(self, username: str, password: str, client_key: str) -> IssuedSession:
@@ -165,6 +193,8 @@ class AuthService:
                 window_seconds=self._settings.auth_login_username_ip_window_seconds,
             )
         )
+        event: AuditEventDraft | None = None
+        issued: IssuedSession | None = None
         async with self._unit_of_work_factory() as unit_of_work:
             user = await unit_of_work.auth.find_user_by_username(normalized)
             password_hash = user.credential.password_hash if user else None
@@ -174,7 +204,14 @@ class AuthService:
                 or user.identity.status is not UserStatus.ACTIVE
                 or not verification.valid
             ):
-                raise InvalidCredentialsError()
+                error = InvalidCredentialsError()
+                error.audit_metadata = {
+                    "scope": username_ip_bucket.scope,
+                    "subject_hash": username_ip_bucket.subject_hash,
+                    "count": username_ip_bucket.count,
+                    "limit": username_ip_bucket.maximum,
+                }
+                raise error
             if verification.needs_rehash:
                 replacement = await asyncio.to_thread(hash_password, password)
                 await unit_of_work.auth.update_password_hash(
@@ -185,7 +222,22 @@ class AuthService:
                 subject_hash=username_ip_bucket.subject_hash,
                 window_started_at=username_ip_bucket.window_started_at,
             )
-            return await self._issue(unit_of_work, user.identity)
+            issued = await self._issue(unit_of_work, user.identity)
+            event = new_audit_event(
+                AuditAction.AUTH_LOGIN_SUCCEEDED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                actor_user_id=user.identity.user_id,
+                session_id=issued.principal.session_id,
+                resource_type="session",
+                resource_id=issued.principal.session_id,
+                metadata={"password_rehashed": verification.needs_rehash},
+            )
+            await unit_of_work.audit.append(event)
+        if issued is None or event is None:
+            raise RuntimeError("authentication transaction produced no session")
+        emit_audit_event(event)
+        return issued
 
     async def resolve(self, session_token: str) -> SessionPrincipal:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -197,8 +249,19 @@ class AuthService:
             return principal
 
     async def logout(self, principal: SessionPrincipal) -> None:
+        event = new_audit_event(
+            AuditAction.AUTH_LOGOUT_SUCCEEDED,
+            AuditOutcome.SUCCEEDED,
+            source=self._audit_source,
+            actor_user_id=principal.user_id,
+            session_id=principal.session_id,
+            resource_type="session",
+            resource_id=principal.session_id,
+        )
         async with self._unit_of_work_factory() as unit_of_work:
             await unit_of_work.auth.delete_session(principal.session_id)
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
 
     @staticmethod
     def require_csrf(principal: SessionPrincipal, csrf_token: str) -> None:
@@ -209,5 +272,17 @@ class AuthService:
         now = utc_now()
         async with self._unit_of_work_factory() as unit_of_work:
             if dry_run:
-                return await unit_of_work.auth.count_expired(now)
-            return await unit_of_work.auth.purge_expired(now)
+                result = await unit_of_work.auth.count_expired(now)
+            else:
+                result = await unit_of_work.auth.purge_expired(now)
+                event = new_audit_event(
+                AuditAction.AUTH_PURGE_COMPLETED,
+                    AuditOutcome.SUCCEEDED,
+                    source=AuditSource.CLI,
+                    metadata={"sessions": result[0], "rate_limits": result[1]},
+                )
+                await unit_of_work.audit.append(event)
+        if dry_run:
+            return result
+        emit_audit_event(event)
+        return result

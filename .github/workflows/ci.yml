@@ -67,8 +67,8 @@ jobs:
       - name: Audit locked backend environment
         working-directory: backend
         run: |
-          uv sync --frozen --all-groups --extra auth
-          uv run --frozen --no-sync pip-audit
+          uv sync --frozen --all-groups --extra auth --no-install-project
+          uv run --frozen --no-sync pip-audit --strict --skip-editable
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
