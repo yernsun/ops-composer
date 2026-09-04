@@ -27,7 +27,7 @@ from ops_composer.domain.audit import (
     AuditSeverity,
     AuditSource,
 )
-from ops_composer.domain.errors import OpsError
+from ops_composer.domain.errors import HostKeyConfirmationRequiredError, OpsError
 from ops_composer.domain.ops import Run, RunStatus, RunTarget, RunTargetStatus
 from ops_composer.observability import (
     configure_logging,
@@ -257,7 +257,11 @@ async def _known_hosts(run: Run, assets: AssetService) -> str:
         host_id = UUID(str(target["hostId"]))
         keys = await assets.list_host_keys(host_id)
         if not keys:
-            raise ValueError(f"host {target['name']} has no confirmed SSH host key")
+            host_name = str(target["name"])
+            raise HostKeyConfirmationRequiredError(
+                f"SSH host key confirmation is required for host {host_name}",
+                details={"hostId": str(host_id), "name": host_name},
+            )
         address = str(target["address"])
         port = int(str(target["sshPort"]))
         marker = address if port == 22 else f"[{address}]:{port}"
@@ -289,6 +293,18 @@ async def execute_run(
         inventory, secret_values = await _runtime_inventory(run, credentials)
         known_hosts = await _known_hosts(run, assets)
     except (OpsError, ValueError, KeyError) as error:
+        failure_code = (
+            "HOST_KEY_CONFIRMATION_REQUIRED"
+            if isinstance(error, HostKeyConfirmationRequiredError)
+            else error.code.upper()
+            if isinstance(error, OpsError)
+            else "PREPARATION_FAILED"
+        )
+        failure_message = (
+            error.message
+            if isinstance(error, HostKeyConfirmationRequiredError)
+            else "run preparation failed"
+        )
         await audit_service.record_best_effort(
             new_audit_event(
                 AuditAction.RUN_PREPARATION_FAILED,
@@ -312,15 +328,15 @@ async def execute_run(
         await coordinator.append_event(
             run.run_id,
             event_type="run_rejected",
-            event_data={"code": "PREPARATION_FAILED", "message": str(error)},
+            event_data={"code": failure_code, "message": failure_message},
         )
         await coordinator.finish(
             run.run_id,
             status=RunStatus.REJECTED,
             return_code=None,
             summary={},
-            failure_code="PREPARATION_FAILED",
-            failure_message="run preparation failed",
+            failure_code=failure_code,
+            failure_message=failure_message,
             exception_type=type(error).__name__,
             failure_stage="run_preparation",
         )

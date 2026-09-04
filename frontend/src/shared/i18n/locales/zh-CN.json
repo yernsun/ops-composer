@@ -130,12 +130,17 @@
     "variablesHint": "连接相关 ansible_* 变量由系统控制，不能在这里覆盖。",
     "variablesInvalid": "主机变量必须是有效 JSON 对象。",
     "enabled": "启用此主机",
+    "trustWorkflow": "首次连接前必须扫描并由管理员确认 SSH Host Key；系统不会静默信任未知指纹。",
     "scanKey": "扫描 Host Key",
     "test": "连接测试",
+    "testFailed": "连接测试创建失败",
     "deleteTitle": "删除主机",
     "deleteConfirm": "确定删除主机“{name}”吗？已有执行历史的主机不能删除。",
     "scanFailed": "Host Key 扫描失败",
     "keyConfirmed": "Host Key 已确认",
+    "keyConfirmFailed": "Host Key 确认失败",
+    "confirmationRequired": "该主机尚未确认 SSH Host Key。请核验下方指纹；确认后将自动开始连接测试。",
+    "confirmationRequiredRun": "目标中存在尚未确认 SSH Host Key 的主机。请先到主机管理扫描并确认指纹。",
     "hostKeys": "SSH Host Key",
     "keyHint": "请通过带外渠道核验 {host} 的指纹后再确认。",
     "confirmKey": "确认并信任"
@@ -259,6 +264,7 @@
     "returnCode": "返回码",
     "changed": "变更",
     "failed": "失败",
+    "reviewHostKeys": "前往主机管理确认指纹",
     "noEvents": "暂时没有事件；SSE 会自动续传。"
   },
   "system": {

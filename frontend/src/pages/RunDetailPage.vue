@@ -62,6 +62,36 @@ const completion = computed(() => {
   return Math.round((completed / targets.value.length) * 100)
 })
 const canCancel = computed(() => run.value && !terminal.has(run.value.status))
+const rejectionEvent = computed(() =>
+  [...events.value].reverse().find((event) => event.eventType === 'run_rejected'),
+)
+const rejectionCode = computed(() => {
+  const value = rejectionEvent.value?.eventData?.code
+  return typeof value === 'string' ? value : null
+})
+const rejectionMessage = computed(() => {
+  const value = rejectionEvent.value?.eventData?.message
+  return typeof value === 'string' ? value : null
+})
+const requiresHostKeyConfirmation = computed(() => {
+  if (run.value?.failureCode === 'HOST_KEY_CONFIRMATION_REQUIRED') return true
+  if (rejectionCode.value === 'HOST_KEY_CONFIRMATION_REQUIRED') return true
+  const message = rejectionMessage.value?.toLocaleLowerCase() ?? ''
+  return (
+    message.includes('host key confirmation is required') ||
+    message.includes('no confirmed ssh host key')
+  )
+})
+const displayFailureCode = computed(() =>
+  requiresHostKeyConfirmation.value
+    ? 'HOST_KEY_CONFIRMATION_REQUIRED'
+    : run.value?.failureCode,
+)
+const displayFailureMessage = computed(() =>
+  requiresHostKeyConfirmation.value
+    ? t('hosts.confirmationRequiredRun')
+    : run.value?.failureMessage,
+)
 
 const cancelMutation = useMutation({
   mutationFn: () => api.cancelRun(props.id),
@@ -191,8 +221,19 @@ onBeforeUnmount(() => source?.close())
                 <pre>{{ JSON.stringify(run.summary, null, 2) }}</pre>
               </section>
             </div>
-            <Message v-if="run.failureMessage" severity="error" :closable="false">
-              <strong>{{ run.failureCode }}</strong> — {{ run.failureMessage }}
+            <Message v-if="displayFailureMessage" severity="error" :closable="false">
+              <div class="run-failure-message">
+                <span><strong>{{ displayFailureCode }}</strong> — {{ displayFailureMessage }}</span>
+                <Button
+                  v-if="requiresHostKeyConfirmation"
+                  icon="pi pi-shield"
+                  :label="t('runDetail.reviewHostKeys')"
+                  severity="danger"
+                  outlined
+                  size="small"
+                  @click="router.push({ name: 'hosts' })"
+                />
+              </div>
             </Message>
           </TabPanel>
           <TabPanel value="targets">
@@ -210,6 +251,7 @@ onBeforeUnmount(() => source?.close())
               <article v-for="event in events" :key="event.sequence">
                 <header><span>#{{ event.sequence }}</span><strong>{{ event.eventType }}</strong><time>{{ date(event.createdAt) }}</time></header>
                 <pre v-if="event.stdout">{{ event.stdout }}</pre>
+                <pre v-if="Object.keys(event.eventData ?? {}).length" class="event-data">{{ JSON.stringify(event.eventData, null, 2) }}</pre>
               </article>
               <p v-if="!events.length" class="muted">{{ t('runDetail.noEvents') }}</p>
             </div>

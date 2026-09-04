@@ -354,12 +354,14 @@ pre {
 .run-tabs { border: 1px solid var(--app-border); border-radius: 16px; overflow: hidden; box-shadow: var(--app-shadow); }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .detail-grid h3 { margin-top: 0; }
+.run-failure-message { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; }
 .event-console { max-height: 62vh; overflow: auto; display: grid; gap: .6rem; border-radius: 12px; background: #09111f; padding: 1rem; color: #dce9ff; }
 .event-console article { border-bottom: 1px solid #22304a; padding-bottom: .6rem; }
 .event-console article:last-child { border-bottom: 0; }
 .event-console header { display: flex; gap: .7rem; color: #93afd5; font-size: .72rem; }
 .event-console header time { margin-left: auto; }
 .event-console pre { border: 0; padding: .5rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-console .event-data { color: #a8c7ef; font-size: .75rem; }
 .system-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 
 @media (max-width: 1100px) {

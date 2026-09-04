@@ -15,7 +15,7 @@ import pytest
 import ops_composer.worker as worker_module
 from ops_composer.domain.audit import AuditAction, AuditEventDraft, AuditOutcome
 from ops_composer.domain.base import utc_now
-from ops_composer.domain.errors import NotFoundError
+from ops_composer.domain.errors import HostKeyConfirmationRequiredError, NotFoundError
 from ops_composer.domain.ops import (
     HostKey,
     ResolvedHost,
@@ -228,7 +228,7 @@ async def test_runtime_inventory_validates_snapshots_caches_secrets_and_known_ho
     assert "192.0.2.10 ssh-ed25519" in known_hosts
     assert "[192.0.2.10]:2222 ssh-rsa" in known_hosts
     keys[second.host_id] = ()
-    with pytest.raises(ValueError, match="no confirmed SSH host key"):
+    with pytest.raises(HostKeyConfirmationRequiredError, match="confirmation is required"):
         await _known_hosts(run, cast(Any, _Assets()))
 
 

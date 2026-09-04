@@ -492,6 +492,7 @@ async def test_run_service_validates_creates_queries_and_cancels(tmp_path: Path)
         resolve_all_hosts=AsyncMock(return_value=(host,)),
         get_group=AsyncMock(return_value=object()),
         resolve_group_hosts=AsyncMock(return_value=(host,)),
+        host_ids_without_keys=AsyncMock(return_value=()),
     )
     factory = _factory(assets=assets, runs=repository)
     playbook = Playbook(

@@ -15,6 +15,7 @@ from ops_composer.domain.audit import (
 from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     ClaimCollisionError,
+    HostKeyConfirmationRequiredError,
     IdempotencyConflictError,
     NotFoundError,
     OpsError,
@@ -128,6 +129,26 @@ class RunService:
         if not hosts:
             raise ValidationError("target resolves to no enabled hosts")
         return hosts
+
+    @staticmethod
+    async def _require_confirmed_host_keys(
+        unit_of_work: UnitOfWork,
+        hosts: tuple[tuple[UUID, str], ...],
+    ) -> None:
+        missing_ids = await unit_of_work.assets.host_ids_without_keys(
+            tuple(host_id for host_id, _ in hosts)
+        )
+        if not missing_ids:
+            return
+        names = {host_id: name for host_id, name in hosts}
+        raise HostKeyConfirmationRequiredError(
+            details={
+                "hosts": [
+                    {"hostId": str(host_id), "name": names[host_id]}
+                    for host_id in missing_ids
+                ]
+            }
+        )
 
     async def create_command(
         self,
@@ -332,6 +353,12 @@ class RunService:
                 if persisted.request_fingerprint != fingerprint:
                     raise IdempotencyConflictError()
                 if created:
+                    failure_stage = "host_key_validation"
+                    await self._require_confirmed_host_keys(
+                        unit_of_work,
+                        tuple((host.host_id, host.name) for host in hosts),
+                    )
+                    failure_stage = "run_persistence"
                     await unit_of_work.runs.append_event(
                         RunEvent(
                             run_event_id=uuid4(),
@@ -382,7 +409,7 @@ class RunService:
             error.audit_recorded = True
             raise
         except OpsError as error:
-            if failure_stage == "target_resolution":
+            if failure_stage in {"target_resolution", "host_key_validation"}:
                 await AuditService(self._unit_of_work_factory).record_best_effort(
                     new_audit_event(
                         AuditAction.RUN_TARGET_RESOLUTION_FAILED,
@@ -396,6 +423,7 @@ class RunService:
                         metadata={
                             "operation_kind": kind.value,
                             "target_kind": target_kind.value,
+                            "details": error.details or {},
                         },
                     )
                 )
@@ -513,6 +541,10 @@ class RunService:
             if persisted.request_fingerprint != fingerprint:
                 raise IdempotencyConflictError()
             if created:
+                await self._require_confirmed_host_keys(
+                    unit_of_work,
+                    tuple((target.host_id, target.host_name) for target in source_targets),
+                )
                 await unit_of_work.runs.append_event(
                     RunEvent(
                         run_event_id=uuid4(),

@@ -9,6 +9,7 @@ import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
+import Message from 'primevue/message'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
@@ -21,6 +22,7 @@ import { useRouter } from 'vue-router'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import {
+  ApiRequestError,
   api,
   type HostDto,
   type HostKeyScanDto,
@@ -49,6 +51,7 @@ const editVisible = ref(false)
 const keysVisible = ref(false)
 const keyHost = ref<HostDto | null>(null)
 const scannedKeys = ref<HostKeyScanDto[]>([])
+const pendingTestHostId = ref<string | null>(null)
 const form = reactive<HostForm>({
   hostId: null,
   name: '',
@@ -114,6 +117,30 @@ const saveMutation = useMutation({
 const testMutation = useMutation({
   mutationFn: api.testHost,
   onSuccess: (run) => void router.push({ name: 'run-detail', params: { id: run.runId } }),
+  onError: (error, hostId) => {
+    if (
+      error instanceof ApiRequestError &&
+      error.code === 'host_key_confirmation_required'
+    ) {
+      const host = (hostsQuery.data.value ?? []).find((item) => item.hostId === hostId)
+      if (host) {
+        scanKeys(host, true)
+        toast.add({
+          severity: 'warn',
+          summary: t('hosts.hostKeys'),
+          detail: t('hosts.confirmationRequired'),
+          life: 8000,
+        })
+        return
+      }
+    }
+    toast.add({
+      severity: 'error',
+      summary: t('hosts.testFailed'),
+      detail: error.message,
+      life: 5000,
+    })
+  },
 })
 const scanMutation = useMutation({
   mutationFn: api.scanHostKeys,
@@ -121,16 +148,33 @@ const scanMutation = useMutation({
     scannedKeys.value = keys
     keysVisible.value = true
   },
-  onError: (error) =>
-    toast.add({ severity: 'error', summary: t('hosts.scanFailed'), detail: error.message, life: 5000 }),
+  onError: (error) => {
+    pendingTestHostId.value = null
+    toast.add({
+      severity: 'error',
+      summary: t('hosts.scanFailed'),
+      detail: error.message,
+      life: 5000,
+    })
+  },
 })
 const confirmKeyMutation = useMutation({
   mutationFn: ({ hostId, key }: { hostId: string; key: HostKeyScanDto }) =>
     api.confirmHostKey(hostId, { algorithm: key.algorithm, fingerprint: key.fingerprint }),
-  onSuccess: () => {
+  onSuccess: (_key, request) => {
+    const resumeTest = pendingTestHostId.value === request.hostId
+    pendingTestHostId.value = null
     toast.add({ severity: 'success', summary: t('hosts.keyConfirmed'), life: 2500 })
     keysVisible.value = false
+    if (resumeTest) testMutation.mutate(request.hostId)
   },
+  onError: (error) =>
+    toast.add({
+      severity: 'error',
+      summary: t('hosts.keyConfirmFailed'),
+      detail: error.message,
+      life: 5000,
+    }),
 })
 
 function resetForm(): void {
@@ -189,7 +233,8 @@ function removeHost(host: HostDto): void {
   })
 }
 
-function scanKeys(host: HostDto): void {
+function scanKeys(host: HostDto, resumeTest = false): void {
+  pendingTestHostId.value = resumeTest ? host.hostId : null
   keyHost.value = host
   scannedKeys.value = []
   scanMutation.mutate(host.hostId)
@@ -201,6 +246,9 @@ function scanKeys(host: HostDto): void {
     <PageHeader :title="t('hosts.title')" :description="t('hosts.description')">
       <Button icon="pi pi-plus" :label="t('hosts.add')" @click="resetForm" />
     </PageHeader>
+    <Message severity="info" :closable="false">
+      <i class="pi pi-shield" /> {{ t('hosts.trustWorkflow') }}
+    </Message>
     <section class="surface-card">
       <div class="table-toolbar">
         <IconField>
@@ -242,8 +290,8 @@ function scanKeys(host: HostDto): void {
           <template #body="{ data }">
             <div class="row-actions">
               <Button icon="pi pi-pencil" text rounded :aria-label="t('common.edit')" @click="editHost(data)" />
-              <Button icon="pi pi-shield" text rounded :aria-label="t('hosts.scanKey')" @click="scanKeys(data)" />
-              <Button icon="pi pi-bolt" text rounded :aria-label="t('hosts.test')" :loading="testMutation.isPending.value" @click="testMutation.mutate(data.hostId)" />
+              <Button icon="pi pi-shield" :label="t('hosts.scanKey')" text size="small" :loading="scanMutation.isPending.value && keyHost?.hostId === data.hostId" @click="scanKeys(data)" />
+              <Button icon="pi pi-bolt" :label="t('hosts.test')" text size="small" :loading="testMutation.isPending.value" @click="testMutation.mutate(data.hostId)" />
               <Button icon="pi pi-trash" severity="danger" text rounded :aria-label="t('common.delete')" @click="removeHost(data)" />
             </div>
           </template>
@@ -276,7 +324,16 @@ function scanKeys(host: HostDto): void {
       </template>
     </Dialog>
 
-    <Dialog v-model:visible="keysVisible" modal :header="t('hosts.hostKeys')" :style="{ width: 'min(720px, 94vw)' }">
+    <Dialog
+      v-model:visible="keysVisible"
+      modal
+      :header="t('hosts.hostKeys')"
+      :style="{ width: 'min(720px, 94vw)' }"
+      @hide="pendingTestHostId = null"
+    >
+      <Message v-if="pendingTestHostId" severity="warn" :closable="false">
+        {{ t('hosts.confirmationRequired') }}
+      </Message>
       <p class="muted">{{ t('hosts.keyHint', { host: keyHost?.name ?? '' }) }}</p>
       <div class="key-list">
         <article v-for="key in scannedKeys" :key="key.algorithm" class="key-card">

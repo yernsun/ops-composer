@@ -48,6 +48,11 @@ class HostKeyChangedError(ConflictError):
     public_message = "the SSH host key differs from the trusted key"
 
 
+class HostKeyConfirmationRequiredError(ConflictError):
+    code = "host_key_confirmation_required"
+    public_message = "SSH host key confirmation is required"
+
+
 class RunNotCancelableError(ConflictError):
     code = "run_not_cancelable"
     public_message = "run is already in a terminal state"

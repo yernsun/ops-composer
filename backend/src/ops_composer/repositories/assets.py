@@ -82,6 +82,7 @@ class AssetRepository(BaseRepository, Protocol):
     async def resolve_all_hosts(self) -> tuple[ResolvedHost, ...]: ...
     async def resolve_host_ids(self, host_ids: Sequence[UUID]) -> tuple[ResolvedHost, ...]: ...
     async def resolve_group_hosts(self, group_id: UUID) -> tuple[ResolvedHost, ...]: ...
+    async def host_ids_without_keys(self, host_ids: Sequence[UUID]) -> tuple[UUID, ...]: ...
     async def list_host_keys(self, host_id: UUID) -> tuple[HostKey, ...]: ...
     async def upsert_host_key(self, host_key: HostKey) -> HostKey: ...
     async def get_setting(self, key: str) -> dict[str, object] | None: ...
@@ -417,6 +418,24 @@ class PostgresAssetRepository(BaseRepository):
             prepare=True,
         )
         return tuple(HostKey.model_validate(row) for row in rows)
+
+    async def host_ids_without_keys(self, host_ids: Sequence[UUID]) -> tuple[UUID, ...]:
+        unique_ids = list(dict.fromkeys(host_ids))
+        if not unique_ids:
+            return ()
+        rows = await self.connection.fetch_all(
+            sql.SQL(
+                "SELECT requested.host_id FROM "
+                "unnest(%(host_ids)s::uuid[]) WITH ORDINALITY "
+                "AS requested(host_id, position) "
+                "WHERE NOT EXISTS (SELECT 1 FROM host_keys "
+                "WHERE host_keys.host_id = requested.host_id) "
+                "ORDER BY requested.position"
+            ),
+            {"host_ids": unique_ids},
+            prepare=True,
+        )
+        return tuple(UUID(str(row["host_id"])) for row in rows)
 
     async def upsert_host_key(self, host_key: HostKey) -> HostKey:
         row = await self.connection.fetch_one(

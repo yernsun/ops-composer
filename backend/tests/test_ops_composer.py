@@ -23,6 +23,7 @@ from ops_composer.domain.audit import AuditEventDraft
 from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     HostKeyChangedError,
+    HostKeyConfirmationRequiredError,
     IdempotencyConflictError,
     ValidationError,
 )
@@ -264,9 +265,13 @@ def test_secret_and_connection_extra_vars_are_rejected(extra_vars: dict[str, obj
 class _AssetsRepository:
     def __init__(self, host: ResolvedHost) -> None:
         self.host = host
+        self.missing_host_ids: tuple[UUID, ...] = ()
 
     async def resolve_host_ids(self, _host_ids: tuple[UUID, ...]) -> tuple[ResolvedHost, ...]:
         return (self.host,)
+
+    async def host_ids_without_keys(self, host_ids: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        return tuple(host_id for host_id in host_ids if host_id in self.missing_host_ids)
 
 
 class _RunsRepository:
@@ -381,6 +386,30 @@ async def test_run_creation_is_idempotent_and_retry_clones_immutable_snapshots()
     assert retried.credential_versions == created.credential_versions
     retried_target = runs.run_targets[retried.run_id][0]
     assert retried_target.host_address == original_target.host_address
+
+
+@pytest.mark.asyncio
+async def test_run_creation_requires_an_explicitly_confirmed_host_key() -> None:
+    host = _resolved_host()
+    assets = _AssetsRepository(host)
+    assets.missing_host_ids = (host.host_id,)
+    service = RunService(
+        cast(UnitOfWorkFactory, _Factory(_Unit(assets, _RunsRepository()))),
+        Settings(),
+    )
+
+    with pytest.raises(HostKeyConfirmationRequiredError) as captured:
+        await service.create_ping(
+            requested_by=uuid4(),
+            idempotency_key="missing-host-key",
+            host_id=host.host_id,
+        )
+
+    assert captured.value.code == "host_key_confirmation_required"
+    assert captured.value.details == {
+        "hosts": [{"hostId": str(host.host_id), "name": host.name}]
+    }
+    assert captured.value.audit_recorded
 
 
 @pytest.mark.asyncio
