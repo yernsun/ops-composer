@@ -16,7 +16,7 @@ import { useRouter } from 'vue-router'
 
 import PageHeader from '@/components/PageHeader.vue'
 import TargetPicker, { type TargetValue } from '@/components/TargetPicker.vue'
-import { api, type PlaybookDto } from '@/shared/api/client'
+import { ApiRequestError, api, type PlaybookDto } from '@/shared/api/client'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -67,7 +67,15 @@ const executeMutation = useMutation({
   },
   onSuccess: (run) => void router.push({ name: 'run-detail', params: { id: run.runId } }),
   onError: (error) =>
-    toast.add({ severity: 'error', summary: t('playbooks.runFailed'), detail: error.message, life: 5000 }),
+    toast.add({
+      severity: 'error',
+      summary: t('playbooks.runFailed'),
+      detail:
+        error instanceof ApiRequestError && error.code === 'host_key_confirmation_required'
+          ? t('hosts.confirmationRequiredRun')
+          : error.message,
+      life: 8000,
+    }),
 })
 
 function openRun(playbook: PlaybookDto): void {

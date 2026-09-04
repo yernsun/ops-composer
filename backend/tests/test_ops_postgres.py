@@ -19,6 +19,7 @@ from ops_composer.db.registry import MIGRATIONS
 from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     ConflictError,
+    HostKeyConfirmationRequiredError,
     IdempotencyConflictError,
     NotFoundError,
     ValidationError,
@@ -153,6 +154,26 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
             )
             assert group.name == "integration-group-renamed"
 
+            runs = RunService(factory, settings)
+            with pytest.raises(HostKeyConfirmationRequiredError):
+                await runs.create_ping(
+                    requested_by=administrator.user_id,
+                    idempotency_key="missing-host-key-postgres",
+                    host_id=host.host_id,
+                )
+            async with pool.connection() as connection:
+                row = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT count(*) AS count FROM runs "
+                            "WHERE idempotency_key = %(idempotency_key)s"
+                        ),
+                        {"idempotency_key": "missing-host-key-postgres"},
+                    )
+                ).fetchone()
+                assert row is not None
+                assert row["count"] == 0
+
             async def scanned_keys(_host_id):
                 return (
                     {
@@ -192,8 +213,6 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
                 ).fetchone()
                 assert row is not None
                 assert b"database-must-not-contain-this-secret" not in row["encrypted_secret"]
-
-            runs = RunService(factory, settings)
 
             async def create(key: str, command: str = "true"):
                 return await runs.create_command(

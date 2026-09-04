@@ -7,7 +7,11 @@ from fastapi import FastAPI, HTTPException
 from ops_composer.api.errors import install_error_handlers
 from ops_composer.api.observability import RequestContextMiddleware
 from ops_composer.auth.errors import AuthRateLimitedError, InvalidCredentialsError
-from ops_composer.domain.errors import HostKeyChangedError, NotFoundError
+from ops_composer.domain.errors import (
+    HostKeyChangedError,
+    HostKeyConfirmationRequiredError,
+    NotFoundError,
+)
 
 
 @pytest.mark.asyncio
@@ -28,6 +32,12 @@ async def test_error_handlers_return_stable_envelopes_for_all_error_families() -
     async def changed() -> None:
         raise HostKeyChangedError()
 
+    @application.get("/confirmation-required")
+    async def confirmation_required() -> None:
+        raise HostKeyConfirmationRequiredError(
+            details={"hosts": [{"hostId": "00000000-0000-4000-8000-000000000001"}]}
+        )
+
     @application.get("/missing")
     async def missing() -> None:
         raise NotFoundError(details={"resource": "host"})
@@ -45,6 +55,7 @@ async def test_error_handlers_return_stable_envelopes_for_all_error_families() -
         invalid = await client.get("/invalid-login", headers={"X-Request-ID": "auth-1"})
         rate_limited = await client.get("/limited")
         changed_response = await client.get("/changed")
+        confirmation_response = await client.get("/confirmation-required")
         missing_response = await client.get("/missing")
         teapot_response = await client.get("/teapot")
         unhandled_response = await client.get("/unhandled")
@@ -60,6 +71,15 @@ async def test_error_handlers_return_stable_envelopes_for_all_error_families() -
     assert rate_limited.headers["Retry-After"] == "17"
     assert changed_response.status_code == 409
     assert changed_response.json()["code"] == "host_key_changed"
+    assert confirmation_response.status_code == 409
+    assert confirmation_response.json() == {
+        "code": "host_key_confirmation_required",
+        "message": "SSH host key confirmation is required",
+        "details": {
+            "hosts": [{"hostId": "00000000-0000-4000-8000-000000000001"}]
+        },
+        "requestId": confirmation_response.headers["X-Request-ID"],
+    }
     assert missing_response.status_code == 404
     assert missing_response.json()["details"] == {"resource": "host"}
     assert teapot_response.status_code == 418

@@ -74,6 +74,7 @@ def _ops_action(error: OpsError) -> AuditAction:
     return {
         "idempotency_key_reused": AuditAction.RUN_IDEMPOTENCY_CONFLICT,
         "host_key_changed": AuditAction.HOST_KEY_CHANGED,
+        "host_key_confirmation_required": AuditAction.RUN_TARGET_RESOLUTION_FAILED,
         "run_not_cancelable": AuditAction.RUN_CANCEL_REJECTED,
     }.get(error.code, AuditAction.REQUEST_REJECTED)
 

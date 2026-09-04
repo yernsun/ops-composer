@@ -130,12 +130,17 @@
     "variablesHint": "System-managed ansible_* connection variables cannot be overridden.",
     "variablesInvalid": "Host variables must be a valid JSON object.",
     "enabled": "Enable this host",
+    "trustWorkflow": "Before the first connection, an administrator must scan and confirm the SSH host key. Unknown fingerprints are never trusted silently.",
     "scanKey": "Scan host key",
     "test": "Connection test",
+    "testFailed": "Could not create connection test",
     "deleteTitle": "Delete host",
     "deleteConfirm": "Delete host “{name}”? Hosts with run history cannot be deleted.",
     "scanFailed": "Host-key scan failed",
     "keyConfirmed": "Host key confirmed",
+    "keyConfirmFailed": "Could not confirm host key",
+    "confirmationRequired": "This host has no confirmed SSH host key. Verify a fingerprint below; the connection test will start after confirmation.",
+    "confirmationRequiredRun": "One or more target hosts have no confirmed SSH host key. Scan and confirm them in Hosts first.",
     "hostKeys": "SSH host keys",
     "keyHint": "Verify {host}'s fingerprint out of band before confirming.",
     "confirmKey": "Confirm and trust"
@@ -259,6 +264,7 @@
     "returnCode": "Return code",
     "changed": "Changed",
     "failed": "Failed",
+    "reviewHostKeys": "Review host keys in Hosts",
     "noEvents": "No events yet; SSE will resume automatically."
   },
   "system": {

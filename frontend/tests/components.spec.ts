@@ -20,7 +20,12 @@ import PlaybooksPage from '@/pages/PlaybooksPage.vue'
 import RunDetailPage from '@/pages/RunDetailPage.vue'
 import RunsPage from '@/pages/RunsPage.vue'
 import SystemPage from '@/pages/SystemPage.vue'
-import { api, type CredentialDto, type RunDto } from '@/shared/api/client'
+import {
+  ApiRequestError,
+  api,
+  type CredentialDto,
+  type RunDto,
+} from '@/shared/api/client'
 
 const state = vi.hoisted(() => ({
   queries: {} as Record<string, unknown>,
@@ -61,15 +66,15 @@ vi.mock('@tanstack/vue-query', async () => {
     },
     useMutation: (options: {
       mutationFn: (value?: unknown) => unknown
-      onSuccess?: (value: unknown) => unknown
-      onError?: (error: Error) => unknown
+      onSuccess?: (result: unknown, variables: unknown) => unknown
+      onError?: (error: Error, variables: unknown) => unknown
       onSettled?: () => unknown
     }) => {
       const mutate = vi.fn((value?: unknown) => {
         void Promise.resolve()
           .then(() => options.mutationFn(value))
-          .then((result) => options.onSuccess?.(result))
-          .catch((error: Error) => options.onError?.(error))
+          .then((result) => options.onSuccess?.(result, value))
+          .catch((error: Error) => options.onError?.(error, value))
           .finally(() => options.onSettled?.())
       })
       mutate(state.mutationInput)
@@ -283,6 +288,7 @@ class BrowserTestURL extends NativeURL {
 beforeEach(() => {
   config.global.renderStubDefaultSlot = true
   state.routePath = '/'
+  state.mutationInput = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:test' }
   state.queries = {
     auth: session,
     overview: {
@@ -457,5 +463,61 @@ describe('PrimeVue application views', () => {
     await nextTick()
     expect(application.exists()).toBe(true)
     application.unmount()
+  })
+
+  it('starts a host-key scan when a connection test needs explicit trust', async () => {
+    state.mutationInput = hostId as unknown as typeof state.mutationInput
+    vi.mocked(api.testHost).mockRejectedValue(
+      new ApiRequestError(
+        409,
+        'host_key_confirmation_required',
+        'SSH host key confirmation is required',
+        { hosts: [{ hostId, name: host.name }] },
+        'request-test',
+        null,
+      ),
+    )
+
+    const wrapper = shallowMount(HostsPage, mountOptions())
+    await flushPromises()
+
+    expect(api.scanHostKeys).toHaveBeenCalledWith(hostId)
+    expect(state.toasts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: 'warn',
+        detail: 'hosts.confirmationRequired',
+      }),
+    )
+    wrapper.unmount()
+  })
+
+  it('explains legacy preparation failures caused by an unconfirmed host key', async () => {
+    const rejectedRun = {
+      ...run,
+      status: 'REJECTED',
+      failureCode: 'PREPARATION_FAILED',
+      failureMessage: 'run preparation failed',
+    } satisfies RunDto
+    state.queries.run = { run: rejectedRun, targets: [target] }
+    state.queries['run-events'] = [
+      {
+        ...event,
+        eventType: 'run_rejected',
+        eventData: {
+          code: 'PREPARATION_FAILED',
+          message: `host ${host.name} has no confirmed SSH host key`,
+        },
+      },
+    ]
+
+    const wrapper = shallowMount(RunDetailPage, {
+      ...mountOptions(),
+      props: { id: runId },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('HOST_KEY_CONFIRMATION_REQUIRED')
+    expect(wrapper.text()).toContain('hosts.confirmationRequiredRun')
+    wrapper.unmount()
   })
 })
