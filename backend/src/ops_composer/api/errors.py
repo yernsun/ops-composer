@@ -70,7 +70,9 @@ def _auth_action(error: AuthError) -> AuditAction:
     }.get(error.code, AuditAction.REQUEST_REJECTED)
 
 
-def _ops_action(error: OpsError) -> AuditAction:
+def _ops_action(error: OpsError, path: str) -> AuditAction:
+    if "web-shell" in path or "web_shell" in error.code:
+        return AuditAction.WEB_SHELL_DENIED
     return {
         "idempotency_key_reused": AuditAction.RUN_IDEMPOTENCY_CONFLICT,
         "host_key_changed": AuditAction.HOST_KEY_CHANGED,
@@ -160,7 +162,7 @@ def install_error_handlers(app: FastAPI) -> None:
         await _record_failure(
             request,
             new_audit_event(
-                _ops_action(error),
+                _ops_action(error, _route_path(request)),
                 AuditOutcome.DENIED if error.status_code < 500 else AuditOutcome.FAILED,
                 source=AuditSource.API,
                 severity=AuditSeverity.WARNING,

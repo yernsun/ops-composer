@@ -3,6 +3,8 @@ import Button from 'primevue/button'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { useI18n } from 'vue-i18n'
+import { computed } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 
 import AuthPanel from '@/features/auth/AuthPanel.vue'
 import { useSessionState } from '@/features/auth/session'
@@ -10,6 +12,8 @@ import AppShell from '@/layout/AppShell.vue'
 
 const { t } = useI18n()
 const { sessionQuery, session, state: authState } = useSessionState()
+const route = useRoute()
+const terminalLayout = computed(() => route.meta?.layout === 'terminal')
 </script>
 
 <template>
@@ -22,5 +26,6 @@ const { sessionQuery, session, state: authState } = useSessionState()
     <p>{{ t('auth.restoringSession') }}</p>
   </section>
   <AuthPanel v-else-if="authState === 'guest'" />
+  <RouterView v-else-if="session && terminalLayout" />
   <AppShell v-else-if="session" :session="session" />
 </template>

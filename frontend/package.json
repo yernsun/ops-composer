@@ -22,6 +22,8 @@
   "dependencies": {
     "@primeuix/themes": "^1.2.3",
     "@tanstack/vue-query": "^5.90.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "openapi-fetch": "^0.14.0",
     "pinia": "^3.0.3",
     "primeicons": "^7.0.0",

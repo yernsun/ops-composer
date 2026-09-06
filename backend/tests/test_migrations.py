@@ -19,7 +19,9 @@ from ops_composer.db.migrations.auth_security import AUTH_SECURITY
 from ops_composer.db.migrations.core import CORE
 from ops_composer.db.migrations.ops_composer import OPS_COMPOSER
 from ops_composer.db.migrations.playbooks import PLAYBOOKS
+from ops_composer.db.migrations.web_shell import WEB_SHELL
 from ops_composer.db.types import DbConnection
+from ops_composer.domain.audit import AuditAction
 from ops_composer.repositories.base import RepositoryConnection
 from ops_composer.repositories.health import PostgresHealthRepository
 
@@ -193,7 +195,9 @@ async def test_readiness_repository_requires_exact_current_checksums() -> None:
 
 
 def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
-    result = ordered_migrations((PLAYBOOKS, AUDIT, OPS_COMPOSER, AUTH_SECURITY, AUTH, CORE))
+    result = ordered_migrations(
+        (WEB_SHELL, PLAYBOOKS, AUDIT, OPS_COMPOSER, AUTH_SECURITY, AUTH, CORE)
+    )
     assert [entry.migration_id for entry in result] == [
         "0001_core",
         "0020_auth",
@@ -201,6 +205,7 @@ def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
         "0030_ops_composer",
         "0040_audit_events",
         "0050_playbooks",
+        "0060_web_shell",
     ]
     schema_sql = OPS_COMPOSER.up_sql.lower()
     assert "jsonb" in schema_sql
@@ -213,6 +218,13 @@ def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
     assert "generated always as identity" in audit_sql
     assert "timestamptz" in audit_sql
     assert "jsonb" in audit_sql
+
+    web_shell_sql = WEB_SHELL.up_sql.lower()
+    assert "create table web_shell_sessions" in web_shell_sql
+    assert "host_execution_locks" in web_shell_sql
+    assert "web_shell_session_id" in web_shell_sql
+    assert "host_run_locks rename to host_execution_locks" in web_shell_sql
+    assert all(f"'{action.value.casefold()}'" in web_shell_sql for action in AuditAction)
     assert "foreign key" not in audit_sql
     assert "audit_events_reject_update" in audit_sql
 

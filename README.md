@@ -8,7 +8,7 @@ authentication rate limits all live in PostgreSQL. There is no Redis, Celery, Ka
 SQLAlchemy, or standalone Nginx service.
 
 The UI uses Vue 3, TypeScript, PrimeVue 4, Vue Router, and vue-i18n. The backend uses FastAPI,
-Psycopg 3 async pools, Ansible Runner, Argon2id, and AES-256-GCM.
+Psycopg 3 async pools, Ansible Runner, OpenSSH PTYs, Argon2id, and AES-256-GCM.
 
 API, worker, CLI, migration, and Uvicorn output is single-line JSON. Durable business audit events
 are stored in PostgreSQL, are immutable except for retention deletion, and are kept for 180 days by
@@ -61,6 +61,24 @@ discovered; traversal, absolute paths, and escaping symlinks are rejected. In `b
 mount is reported as degraded by System Doctor but does not block database Playbooks. Playbook YAML
 is trusted code stored as plaintext in PostgreSQL and must not contain credentials or deployment
 secrets.
+
+## Web Shell
+
+The Hosts action can open a dedicated full-screen xterm.js Web Shell after an explicit warning.
+It uses a same-origin WebSocket, OpenSSH, `sshpass`, `setsid`, and a local PTY; it does not pass through the Worker and
+is not a replayable Run. Terminal input, output, and recordings are never persisted or audited.
+Only session lifecycle and safe failure metadata are retained.
+
+Web Shell and Runs share the PostgreSQL host lock, so one host permits only one execution at a
+time. Defaults are 5 sessions globally, a 30-minute idle timeout, and an 8-hour hard limit,
+configured by `OPS_COMPOSER_WEB_SHELL_MAX_SESSIONS`,
+`OPS_COMPOSER_WEB_SHELL_IDLE_TIMEOUT_SECONDS`, and
+`OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS`. A host must be enabled, use an enabled PASSWORD
+credential, and have a manually confirmed SSH host key. The password reaches `sshpass -d` only
+through an anonymous pipe; it is never placed in arguments, environment variables, or files.
+
+A production reverse proxy must forward WebSocket Upgrade requests and allow connections longer
+than the configured maximum duration. The browser Origin must be listed in `APP_ALLOWED_ORIGINS`.
 
 ## Operational logs and audit
 
@@ -125,11 +143,17 @@ Run PostgreSQL integration tests against a dedicated database with
 `TEST_DATABASE_URL=postgresql://... uv run pytest 'tests/test_*postgres.py'`. Enable Compose
 validation with `HARNESS_DOCKER=1 python3 harness/check.py`.
 
+Real OpenSSH/PTY acceptance uses the separate, disposable `docker-compose.test.yml` stack (never
+the production Compose): set a generated `TEST_SSH_PASSWORD`, start its `ssh` service, then run
+`TEST_SSH_PASSWORD=<same-value> TEST_SSH_PORT=22222 uv run pytest tests/test_web_shell_ssh.py`.
+
 All external JSON is camelCase; public errors use `code/message/details/requestId`. Mutating APIs
 require the opaque session, an allowed Origin, and CSRF validation. Credential plaintext exists
 only inside the worker during execution; runtime directories are `0700`, files are `0600`, and are
 cleaned on completion. Mounted Playbook paths/hashes and database Playbook revision hashes are
 verified before use.
+Web Shell tickets are single-use, expire after 30 seconds, and are bound to the creating login
+session. Refreshing, disconnecting, or closing the window terminates SSH and releases the host lock.
 
 Read [docs/README.md](docs/README.md) for architectural rules and [AGENTS.md](AGENTS.md) before
 performing a Project Forge update.

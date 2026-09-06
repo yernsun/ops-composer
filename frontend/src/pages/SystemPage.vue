@@ -30,6 +30,16 @@ const doctorQuery = useQuery({ queryKey: ['system-doctor'], queryFn: api.systemD
             <div><dt>{{ t('system.queue') }}</dt><dd>{{ infoQuery.data.value.queue }}</dd></div>
             <div><dt>{{ t('system.playbookSourceMode') }}</dt><dd><code>{{ infoQuery.data.value.playbookSourceMode }}</code></dd></div>
             <div><dt>{{ t('system.workspace') }}</dt><dd><code>{{ infoQuery.data.value.playbookWorkspace }}</code></dd></div>
+            <div><dt>{{ t('system.webShellCapacity') }}</dt><dd>{{ infoQuery.data.value.webShell.maxSessions }}</dd></div>
+            <div>
+              <dt>{{ t('system.webShellTimeouts') }}</dt>
+              <dd>
+                {{ t('system.webShellTimeoutValues', {
+                  idle: Math.round(infoQuery.data.value.webShell.idleTimeoutSeconds / 60),
+                  maximum: Math.round(infoQuery.data.value.webShell.maxDurationSeconds / 3600),
+                }) }}
+              </dd>
+            </div>
           </dl>
         </template>
       </Card>

@@ -18,7 +18,7 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       port: 5173,
       proxy: {
-        '/api': { target: apiProxyTarget, changeOrigin: false },
+        '/api': { target: apiProxyTarget, changeOrigin: false, ws: true },
         '/health': { target: apiProxyTarget, changeOrigin: false },
       },
     },

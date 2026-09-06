@@ -449,7 +449,9 @@ def test_queue_repository_uses_postgresql_claim_lock_lease_and_returning() -> No
     assert "FOR UPDATE OF r SKIP LOCKED" in source
     assert "FROM candidate WHERE r.run_id = candidate.run_id RETURNING {}" in source
     assert ").format(QUALIFIED_RUN_COLUMNS)" in source
-    assert "ON CONFLICT (host_id) DO NOTHING RETURNING host_id" in source
+    assert "INSERT INTO host_execution_locks" in source
+    assert "ON CONFLICT (host_id) DO UPDATE" in source
+    assert "web_shell_session_id = NULL" in source
     assert "UPDATE runs SET next_event_sequence = next_event_sequence + 1" in source
     assert "RETURNING next_event_sequence - 1 AS sequence" in source
     assert "WORKER_LEASE_EXPIRED" in source

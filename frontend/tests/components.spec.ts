@@ -33,6 +33,8 @@ const state = vi.hoisted(() => ({
   queries: {} as Record<string, unknown>,
   routePath: '/',
   pushes: vi.fn(),
+  replaces: vi.fn(),
+  resolves: vi.fn(() => ({ href: '/hosts/test/shell' })),
   confirmations: vi.fn(),
   toasts: vi.fn(),
   mutationInput: { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:test' },
@@ -98,7 +100,7 @@ vi.mock('vue-router', async () => {
     RouterLink,
     RouterView,
     useRoute: () => ({ get path() { return state.routePath } }),
-    useRouter: () => ({ push: state.pushes }),
+    useRouter: () => ({ push: state.pushes, replace: state.replaces, resolve: state.resolves }),
   }
 })
 
@@ -367,6 +369,12 @@ beforeEach(() => {
       projectForgeTemplateDigest: 'test',
       playbookWorkspace: '/workspace',
       playbookSourceMode: 'both',
+      webShell: {
+        enabled: true,
+        maxSessions: 5,
+        idleTimeoutSeconds: 1800,
+        maxDurationSeconds: 28800,
+      },
     },
     'system-doctor': {
       database: { ok: true },
@@ -555,6 +563,28 @@ describe('PrimeVue application views', () => {
         detail: 'hosts.confirmationRequired',
       }),
     )
+    wrapper.unmount()
+  })
+
+  it('requires confirmation before opening Web Shell in a separate window', async () => {
+    const popup = { opener: window, location: { href: '' } }
+    const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    const wrapper = shallowMount(HostsPage, mountOptions())
+    const view = wrapper.vm as unknown as { openWebShell: (value: typeof host) => void }
+
+    view.openWebShell(host)
+    const confirmation = state.confirmations.mock.calls.at(-1)?.[0] as
+      | { accept?: () => void }
+      | undefined
+    confirmation?.accept?.()
+
+    expect(state.resolves).toHaveBeenCalledWith({
+      name: 'web-shell',
+      params: { hostId },
+    })
+    expect(open).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(popup.opener).toBeNull()
+    expect(popup.location.href).toBe('http://localhost:3000/hosts/test/shell')
     wrapper.unmount()
   })
 

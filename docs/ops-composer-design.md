@@ -6,7 +6,7 @@
 - **仓库名称**：`ops-composer`
 - **Python 包名**：`ops_composer`
 - **CLI 命令**：`ops-composer`
-- **文档状态**：Implemented / M1 + database Playbook revisions
+- **文档状态**：Implemented / M1 + database Playbook revisions + Web Shell PTY
 - **目标部署形态**：本地 Docker 部署，远程管理物理机或虚拟机集群
 - **执行内核**：Ansible Core + Ansible Runner
 
@@ -127,6 +127,7 @@ M1 必须完成：
 - 支持目标解析、执行快照、持久化队列；
 - 支持每台主机的结果状态；
 - 支持实时日志、取消、超时和执行历史；
+- 支持独立窗口、连接绑定且不留存内容的 Web Shell PTY；
 - 支持 Docker 本地部署；
 - 所有敏感凭据加密保存，运行结束后清理运行时秘密。
 
@@ -137,8 +138,6 @@ M1 必须完成：
 CPU / 内存 / 磁盘持续监控
 Prometheus 指标
 告警中心
-交互式 SSH Terminal
-WebSocket PTY
 应用发布平台
 Docker Stack 管理 UI
 Docker Swarm 实时控制面
@@ -218,7 +217,7 @@ Host + Group + Credential
 │                                                         │
 │ Hosts │ Groups │ Credentials │ Commands │ Playbooks │ Runs
 └──────────────────────────┬──────────────────────────────┘
-                           │ REST + SSE
+                           │ REST + SSE + WebSocket（仅 Web Shell）
                            ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    OpsComposer API                      │
@@ -229,6 +228,7 @@ Host + Group + Credential
 │ Inventory Renderer                                      │
 │ Playbook Catalog                                        │
 │ Run Service                                             │
+│ Web Shell Manager + OpenSSH PTY                         │
 └──────────────────────────┬──────────────────────────────┘
                            │
                            ▼
@@ -265,7 +265,7 @@ ops-composer-worker
 ```
 
 两者只通过 PostgreSQL 共享持久化状态。数据库 Playbook 也存入 PostgreSQL；可选的
-Workspace 是只读输入，运行目录是 Worker 的临时目录：
+Workspace 是只读输入，运行目录是 Worker 与 API Web Shell 的临时目录：
 
 ```text
 /tmp/ops-composer/
@@ -282,10 +282,10 @@ Workspace 是只读输入，运行目录是 Worker 的临时目录：
 
 ### 4.2 强制边界
 
-- API 只负责请求、查询和 Run 创建；
+- API 负责请求、查询、Run 创建及连接绑定的 Web Shell PTY；
 - Worker 是唯一可以启动 Ansible 的组件；
-- API **不得**同步执行 Ansible；
-- 浏览器断开或刷新不得中止执行；
+- API **不得**同步执行 Ansible；Web Shell 仅启动受控 OpenSSH，不调用 Ansible；
+- 浏览器断开或刷新不得中止 Run，但必须中止 Web Shell；
 - API 重启不得丢失已经持久化的 Run；
 - 多次提交必须由幂等键控制，不能因网络重试重复创建操作。
 
@@ -409,6 +409,15 @@ stdin 关闭
 ### 5.6 不自动重试修改性操作
 
 Worker 中断后，系统无法可靠判断远程命令是否已完成。任何中断的修改性操作必须标记为 `INTERRUPTED`，由用户显式决定是否创建新的 Run。
+
+### 5.7 Web Shell 是连接绑定的临时执行
+
+Web Shell 提供完整交互 PTY，但不是 Run，也不进入 Worker、RunTarget、RunEvent 或 SSE。API
+进程持有浏览器 WebSocket 与本地 OpenSSH PTY；断线、刷新、关窗、登录失效、数据库失联或
+超时会立即终止 SSH 进程组并释放 Host Lock。重连总是创建新会话，不恢复旧 PTY。
+
+Web Shell 与自动化 Run 共用 `host_execution_locks`。终端字节只允许存在于当前 PTY、
+WebSocket 和浏览器内存；数据库与审计只保存会话生命周期及安全元数据。
 
 ---
 
@@ -1164,12 +1173,15 @@ Run B 必须等待 Run A 释放 worker02
 锁表：
 
 ```text
-host_run_locks
+host_execution_locks
 ├── host_id
-├── run_id
+├── run_id XOR web_shell_session_id
+├── owner_id
 ├── acquired_at
 └── expires_at
 ```
+
+Run 与 Web Shell 对同一 Host 使用同一个主键互斥；过期 Lease 可被原子接管，但活跃锁不得覆盖。
 
 获取多个 Host Lock 时，按 Host ID 排序，避免死锁。
 
@@ -1253,7 +1265,7 @@ playbook_on_stats
 
 ## 12. 实时日志与事件流
 
-前端采用 Server-Sent Events，而不是 WebSocket。
+Run 实时事件采用 Server-Sent Events；只有不可回放的 Web Shell PTY 使用同源 WebSocket。
 
 接口：
 
@@ -1517,15 +1529,18 @@ created_at
 UNIQUE(run_id, sequence)
 ```
 
-## 13.8 host_run_locks
+## 13.8 host_execution_locks
 
 ```text
 host_id
-run_id
+run_id (nullable)
+web_shell_session_id (nullable)
+owner_id
 acquired_at
 expires_at
 
 PRIMARY KEY(host_id)
+CHECK(exactly one of run_id / web_shell_session_id is non-null)
 ```
 
 ## 13.9 worker_leases
@@ -1634,6 +1649,31 @@ revision 只允许插入；数据库触发器拒绝更新或删除。YAML 保存
 通过根节点检查和 `ansible-playbook --syntax-check`；数据库仅接受不超过 1 MiB 的单文件
 Playbook。
 
+## 13.16 web_shell_sessions
+
+```text
+web_shell_session_id
+host_id
+actor_user_id
+auth_session_id
+credential_id + credential_version
+host_name + host_address + ssh_port + username (fixed snapshot)
+state
+api_instance_id
+owner_id
+ticket_expires_at
+lease_expires_at
+connected_at
+last_activity_at
+close_requested_at
+created_at
+```
+
+该表是临时协调状态，不保存密码、命令、终端输入输出或录像。创建事务使用 PostgreSQL
+advisory transaction lock 串行计算全局容量，并原子写入固定 Credential revision、Host Lock
+和审计。Ticket 30 秒且一次性消费；活动连接每 10 秒刷新 30 秒 Lease。过期行删除时通过外键
+级联释放 Web Shell Host Lock，审计资源 ID 不使用外键，因此会话回收后仍保留生命周期记录。
+
 ---
 
 ## 14. API 设计
@@ -1654,9 +1694,13 @@ PATCH  /hosts/{id}
 DELETE /hosts/{id}
 
 POST   /hosts/{id}/test
+POST   /hosts/{id}/web-shell-sessions
 ```
 
 `POST /hosts/{id}/test` 创建一个异步 `PING` Run，返回 `202 Accepted`。
+
+Web Shell 创建返回 `201`、会话 ID、固定 Host 摘要、同源 `streamPath`、Ticket 到期时间及会话
+限制。写请求继续要求 Session、Origin 和 CSRF。
 
 ## 14.2 Groups
 
@@ -1743,7 +1787,18 @@ GET /system/readiness
 GET /system/doctor
 ```
 
-## 14.8 错误格式
+## 14.8 Web Shell
+
+```text
+POST   /hosts/{hostId}/web-shell-sessions
+DELETE /web-shell-sessions/{sessionId}
+WS     /web-shell-sessions/{sessionId}/stream
+```
+
+二进制帧承载 PTY 字节；文本 JSON 帧仅允许 `ready`、`resize`、`error`、`closed` 和客户端
+`close` 控制消息。连接不接受查询字符串 Token，严格依赖同源 Cookie 与数据库中的一次性 Ticket。
+
+## 14.9 错误格式
 
 ```json
 {
@@ -1758,6 +1813,11 @@ GET /system/doctor
 
 ```text
 HOST_NOT_FOUND
+host_busy
+web_shell_capacity_reached
+host_key_confirmation_required
+web_shell_session_expired
+web_shell_unavailable
 GROUP_NOT_FOUND
 CREDENTIAL_NOT_FOUND
 CREDENTIAL_DISABLED
@@ -1998,6 +2058,8 @@ Pinia
 PrimeVue
 Vue Router
 vue-i18n
+@xterm/xterm
+@xterm/addon-fit
 ```
 
 约定：
@@ -2018,8 +2080,9 @@ Kafka
 Kubernetes
 SQLAlchemy ORM
 GraphQL
-WebSocket
 ```
+
+WebSocket 仅用于同源、连接绑定且不可回放的 Web Shell PTY，不承担业务事件总线职责。
 
 ---
 
@@ -2163,6 +2226,16 @@ Copy Run ID
 Download Redacted Log
 ```
 
+## 18.8 Web Shell
+
+Hosts 操作列仅为启用主机显示可用的“Web Shell”入口。PrimeVue ConfirmDialog 必须说明：这是
+交互式远端终端、会独占该主机的执行锁、终端内容不被记录。确认后使用新标签页打开
+`/hosts/{hostId}/shell`；弹窗被阻止时显示 Toast。
+
+独立页面不显示控制台侧边栏，顶部只展示 Host、SSH 用户、连接状态、重新连接和关闭。xterm.js
+通过二进制 WebSocket 帧收发终端字节，通过 JSON 控制帧发送 resize/close；支持 Ctrl+C、Tab、
+方向键和交互程序。断线或刷新立即销毁 PTY；“重新连接”创建全新数据库会话。
+
 ---
 
 ## 19. 安全设计
@@ -2277,6 +2350,19 @@ URL encoded 变体替换
 
 任何 Redaction 异常不得导致 Secret 原文被记录。
 
+## 19.6 Web Shell 安全边界
+
+创建 REST 请求要求 Opaque Session、Origin 与 CSRF；WebSocket 握手再次校验 Origin、Session
+Cookie、创建者登录 Session、一次性 Ticket 与 30 秒有效期。Session ID 只是资源标识，不作为
+Bearer Token。密码只经匿名 pipe 传给 `sshpass -d <fd>`，不得进入 argv、env、文件或日志。
+
+OpenSSH 固定 `StrictHostKeyChecking=yes`，使用每会话 `0600 known_hosts`，绝不自动接受未知或
+变化的指纹。运行目录权限 `0700`，连接结束后终止整个进程组并清理。输入帧上限 64 KiB、终端
+尺寸为 20–500 列和 5–200 行，输出缓冲上限 1 MiB；慢消费者和非法控制帧会被断开。
+
+审计只记录会话 ID、Host、管理员、固定 Credential revision、时间、时长、退出码和安全错误码，
+不得记录终端帧、命令、输出、密码或 SSH 原始错误载荷。
+
 ---
 
 ## 20. 日志规范
@@ -2334,7 +2420,12 @@ Master Key
 数据库密文原文
 命令正文与 Ansible 原始载荷
 Token、Cookie、CSRF 与数据库 URL
+Web Shell 终端输入、输出与原始 SSH 错误载荷
 ```
+
+Web Shell 生命周期覆盖申请、开始、主动关闭、拒绝、容量/Host Lock 冲突、认证失效、空闲或
+最长时长超时、SSH 启动失败、数据库失联和过期协调记录回收。终端帧永远不进入
+`audit_events`、RunEvent 或 JSON stdout。
 
 CLI 运维接口：
 
@@ -2382,6 +2473,9 @@ services:
       OPS_COMPOSER_RUNTIME_DIR: /tmp/ops-composer/runtime
       APP_LOG_LEVEL: INFO
       OPS_COMPOSER_AUDIT_RETENTION_DAYS: 180
+      OPS_COMPOSER_WEB_SHELL_MAX_SESSIONS: 5
+      OPS_COMPOSER_WEB_SHELL_IDLE_TIMEOUT_SECONDS: 1800
+      OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS: 28800
     depends_on:
       db:
         condition: service_healthy
@@ -2444,6 +2538,10 @@ cap_drop: ALL
 
 密码 SSH 阶段需要 `sshpass`，后续迁移到 SSH Key 后可考虑去除。
 
+生产反向代理必须转发 `/api/v1/web-shell-sessions/*/stream` 的 WebSocket Upgrade，并将读写
+超时设为大于最大 Web Shell 会话时长。应用继续只发布一个 HTTP 端口，不增加 Gateway、Redis
+或其他服务。
+
 ---
 
 ## 22. 启动与 Readiness Gate
@@ -2460,6 +2558,7 @@ Master Key 能解密检查值
 Workspace 可读
 配置有效
 静态资源可用
+OpenSSH Client 与 sshpass 可用（Web Shell）
 ```
 
 ## 22.2 Worker Ready Gate
@@ -2497,6 +2596,7 @@ Ansible Runner        PASS
 OpenSSH Client        PASS
 SSHPass                PASS
 Known Hosts           PASS
+Web Shell PTY         PASS
 Worker Lease          PASS
 Runtime Directory     PASS
 ```
@@ -2584,6 +2684,7 @@ Output Truncation
 Workspace Revision
 Playbook Metadata
 完整审计日志
+Web Shell PTY、共享 Host Lock 与生命周期审计
 ```
 
 ## 23.4 后续阶段
@@ -2668,6 +2769,8 @@ Secret 扫描结果
 Worker 重启恢复证据
 超时和取消证据
 PARTIAL 聚合证据
+Web Shell Origin/Session/Ticket、PTY resize/Ctrl+C、容量与共享 Host Lock 证据
+Web Shell 断线、超时、进程组终止、运行目录清理与终端内容哨兵扫描
 ```
 
 ---
@@ -2697,7 +2800,7 @@ INV-10 用户不得传入任意 Runner cmdline 或任意 Ansible Module。
 
 INV-11 Worker 中断后的修改性操作不得自动重试。
 
-INV-12 同一 Host 同时最多被一个修改性 Run 持有。
+INV-12 同一 Host 同时最多被一个 Run 或 Web Shell 持有。
 
 INV-13 Run 聚合状态必须由 RunTarget 和结构化事件计算。
 
@@ -2710,6 +2813,12 @@ INV-16 所有远程执行必须存在 timeout。
 INV-17 所有写请求必须支持幂等键或等价去重机制。
 
 INV-18 浏览器连接状态不得决定 Run 生命周期。
+
+INV-19 Web Shell 终端内容不得持久化到数据库、RunEvent、审计或 stdout 日志。
+
+INV-20 Web Shell 必须绑定创建者登录 Session；Ticket 只可消费一次且 30 秒过期。
+
+INV-21 Web Shell 断开时必须终止整个 SSH 进程组并释放通用 Host Lock。
 ```
 
 ---

@@ -26,6 +26,12 @@ async def system_info(_: CurrentSessionDep) -> dict[str, object]:
         "projectForgeTemplateDigest": PROJECT_FORGE_TEMPLATE_DIGEST,
         "playbookWorkspace": str(settings.playbook_workspace),
         "playbookSourceMode": settings.playbook_source_mode.value,
+        "webShell": {
+            "enabled": True,
+            "maxSessions": settings.web_shell_max_sessions,
+            "idleTimeoutSeconds": settings.web_shell_idle_timeout_seconds,
+            "maxDurationSeconds": settings.web_shell_max_duration_seconds,
+        },
     }
 
 

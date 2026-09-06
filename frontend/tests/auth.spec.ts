@@ -9,6 +9,7 @@ import {
   newIdempotencyKey,
   readCsrfToken,
   resolveApiBaseUrl,
+  resolveWebShellSocketUrl,
   runEventSource,
 } from '@/shared/api/client'
 import {
@@ -57,6 +58,21 @@ describe('session API client', () => {
     ).toThrow('must be same-origin')
   })
 
+  it('upgrades only same-origin HTTP Web Shell paths to WebSocket URLs', () => {
+    expect(
+      resolveWebShellSocketUrl(
+        '/api/v1/web-shell-sessions/session-1/stream',
+        'http://172.20.0.10:7777',
+      ),
+    ).toBe('ws://172.20.0.10:7777/api/v1/web-shell-sessions/session-1/stream')
+    expect(
+      resolveWebShellSocketUrl('/api/v1/web-shell-sessions/session-1/stream', 'https://ops.example.com'),
+    ).toBe('wss://ops.example.com/api/v1/web-shell-sessions/session-1/stream')
+    expect(() =>
+      resolveWebShellSocketUrl('wss://other.example.com/stream', 'https://ops.example.com'),
+    ).toThrow('same HTTP origin')
+  })
+
   it('prefers the production CSRF cookie and sends it on unsafe requests', async () => {
     vi.spyOn(document, 'cookie', 'get').mockReturnValue(
       '__Host-ops-composer-csrf=production-token; ops-composer-csrf=dev-token',
@@ -103,6 +119,7 @@ describe('session API client', () => {
       api.logout(),
       api.overview(),
       api.hosts(),
+      api.host('host-1'),
       api.createHost({} as Parameters<typeof api.createHost>[0]),
       api.updateHost('host-1', {} as Parameters<typeof api.updateHost>[1]),
       api.deleteHost('host-1'),
@@ -112,6 +129,8 @@ describe('session API client', () => {
         algorithm: 'ssh-ed25519',
         fingerprint: 'SHA256:test',
       }),
+      api.createWebShellSession('host-1'),
+      api.closeWebShellSession('shell-1'),
       api.groups(),
       api.createGroup({} as Parameters<typeof api.createGroup>[0]),
       api.updateGroup('group-1', {} as Parameters<typeof api.updateGroup>[1]),
@@ -138,7 +157,7 @@ describe('session API client', () => {
       api.systemDoctor(),
     ])
 
-    expect(requests).toHaveLength(30)
+    expect(requests).toHaveLength(33)
     expect(requests.every(({ url }) => url.startsWith(window.location.origin))).toBe(true)
     expect(requests.find(({ url }) => url.includes('/runs?limit=25'))).toBeDefined()
     expect(newIdempotencyKey().length).toBeGreaterThanOrEqual(8)

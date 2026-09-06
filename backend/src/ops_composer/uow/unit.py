@@ -16,6 +16,7 @@ from ops_composer.repositories.base import RepositoryConnection
 from ops_composer.repositories.health import PostgresHealthRepository
 from ops_composer.repositories.playbooks import PostgresPlaybookRepository
 from ops_composer.repositories.runs import PostgresRunRepository
+from ops_composer.repositories.web_shell import PostgresWebShellRepository
 
 EXPECTED_MIGRATION_CHECKSUMS = {
     migration.migration_id: migration.checksum for migration in MIGRATIONS
@@ -102,6 +103,12 @@ class UnitOfWork:
         """Return append-only operational audit persistence."""
 
         return PostgresAuditRepository(self._require_connection())
+
+    @cached_property
+    def web_shell(self) -> PostgresWebShellRepository:
+        """Return Web Shell ticket, lease, and Host Lock persistence."""
+
+        return PostgresWebShellRepository(self._require_connection())
 
     async def __aexit__(
         self,

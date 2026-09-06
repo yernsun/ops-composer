@@ -20,6 +20,7 @@ RUN apt-get update \
         openssh-client \
         sshpass \
         tini \
+        util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 ops-composer \
     && useradd --system --uid 10001 --gid ops-composer --home-dir /app ops-composer

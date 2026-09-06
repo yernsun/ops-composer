@@ -140,6 +140,33 @@ class Settings(BaseSettings):
         le=3650,
         validation_alias="OPS_COMPOSER_AUDIT_RETENTION_DAYS",
     )
+    web_shell_max_sessions: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        validation_alias="OPS_COMPOSER_WEB_SHELL_MAX_SESSIONS",
+    )
+    web_shell_idle_timeout_seconds: int = Field(
+        default=1800,
+        ge=60,
+        le=86400,
+        validation_alias="OPS_COMPOSER_WEB_SHELL_IDLE_TIMEOUT_SECONDS",
+    )
+    web_shell_max_duration_seconds: int = Field(
+        default=28800,
+        ge=300,
+        le=86400,
+        validation_alias="OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS",
+    )
+
+    @model_validator(mode="after")
+    def require_valid_web_shell_limits(self) -> Settings:
+        if self.web_shell_max_duration_seconds < self.web_shell_idle_timeout_seconds:
+            raise ValueError(
+                "OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS must be greater than or equal "
+                "to OPS_COMPOSER_WEB_SHELL_IDLE_TIMEOUT_SECONDS"
+            )
+        return self
 
     @model_validator(mode="after")
     def require_safe_production_settings(self) -> Settings:
@@ -236,6 +263,11 @@ class Settings(BaseSettings):
             "playbook_workspace": str(self.playbook_workspace),
             "playbook_source_mode": self.playbook_source_mode.value,
             "runtime_dir": str(self.runtime_dir),
+            "web_shell": {
+                "max_sessions": self.web_shell_max_sessions,
+                "idle_timeout_seconds": self.web_shell_idle_timeout_seconds,
+                "max_duration_seconds": self.web_shell_max_duration_seconds,
+            },
             "authentication": {
                 "mode": "single-administrator",
                 "allowed_origins": sorted(self.allowed_origins),
