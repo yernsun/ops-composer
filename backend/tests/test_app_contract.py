@@ -16,6 +16,7 @@ def test_m1_openapi_contract_is_single_admin_and_complete() -> None:
         "/api/v1/hosts/{host_id}",
         "/api/v1/hosts/{host_id}/host-keys/scan",
         "/api/v1/hosts/{host_id}/host-keys/confirm",
+        "/api/v1/hosts/{host_id}/web-shell-sessions",
         "/api/v1/groups",
         "/api/v1/groups/{group_id}",
         "/api/v1/credentials",
@@ -36,9 +37,10 @@ def test_m1_openapi_contract_is_single_admin_and_complete() -> None:
         "/api/v1/runs/{run_id}/events/stream",
         "/api/v1/system/info",
         "/api/v1/system/doctor",
+        "/api/v1/web-shell-sessions/{web_shell_session_id}",
     }
     assert expected <= paths
-    assert len(paths) == 36
+    assert len(paths) == 38
     assert not any("signup" in path or "workspace" in path for path in paths)
 
     session = schema["components"]["schemas"]["SessionResponse"]["properties"]
@@ -79,6 +81,9 @@ def test_settings_only_expose_postgresql_and_local_runtime_capabilities() -> Non
     assert "playbook_workspace" in fields
     assert "playbook_source_mode" in fields
     assert "runtime_dir" in fields
+    assert "web_shell_max_sessions" in fields
+    assert "web_shell_idle_timeout_seconds" in fields
+    assert "web_shell_max_duration_seconds" in fields
     assert "redis_url" not in fields
     assert "sqlite_path" not in fields
     assert "broker_url" not in fields

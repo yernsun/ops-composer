@@ -74,6 +74,7 @@ _CONTEXT_NAMES = (
     "run_id",
     "run_target_id",
     "worker_id",
+    "web_shell_session_id",
 )
 _CONTEXT: dict[str, ContextVar[object | None]] = {
     name: ContextVar(name, default=None) for name in _CONTEXT_NAMES
@@ -98,6 +99,7 @@ _LOG_FIELDS = (
     "group_id",
     "credential_id",
     "worker_id",
+    "web_shell_session_id",
     "resource_type",
     "resource_id",
     "operation_kind",

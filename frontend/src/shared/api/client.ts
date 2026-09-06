@@ -28,6 +28,7 @@ export type DatabasePlaybookUpdateDto = components['schemas']['DatabasePlaybookU
 export type PlaybookValidationDto = components['schemas']['PlaybookValidationRequest']
 export type PlaybookValidationResultDto = components['schemas']['PlaybookValidationResponse']
 export type OverviewDto = components['schemas']['OverviewResponse']
+export type WebShellSessionDto = components['schemas']['WebShellSessionResponse']
 
 export interface SystemInfoDto {
   name: string
@@ -38,6 +39,12 @@ export interface SystemInfoDto {
   projectForgeTemplateDigest: string
   playbookWorkspace: string
   playbookSourceMode: string
+  webShell: {
+    enabled: boolean
+    maxSessions: number
+    idleTimeoutSeconds: number
+    maxDurationSeconds: number
+  }
 }
 
 interface ErrorEnvelope {
@@ -202,6 +209,7 @@ export const api = {
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   overview: () => request<OverviewDto>('/api/v1/overview'),
   hosts: () => request<HostDto[]>('/api/v1/hosts'),
+  host: (id: string) => request<HostDto>(`/api/v1/hosts/${id}`),
   createHost: (input: HostCreateDto) =>
     request<HostDto>('/api/v1/hosts', { method: 'POST', body: input }),
   updateHost: (id: string, input: HostUpdateDto) =>
@@ -220,6 +228,12 @@ export const api = {
       idempotencyKey: newIdempotencyKey(),
       body: value,
     }),
+  createWebShellSession: (id: string) =>
+    request<WebShellSessionDto>(`/api/v1/hosts/${id}/web-shell-sessions`, {
+      method: 'POST',
+    }),
+  closeWebShellSession: (id: string) =>
+    request<void>(`/api/v1/web-shell-sessions/${id}`, { method: 'DELETE' }),
   groups: () => request<HostGroupDto[]>('/api/v1/groups'),
   createGroup: (input: GroupDto) =>
     request<HostGroupDto>('/api/v1/groups', { method: 'POST', body: input }),
@@ -284,6 +298,24 @@ export const api = {
     }),
   systemInfo: () => request<SystemInfoDto>('/api/v1/system/info'),
   systemDoctor: () => request<Record<string, unknown>>('/api/v1/system/doctor'),
+}
+
+export function resolveWebShellSocketUrl(
+  streamPath: string,
+  apiBaseUrl: string = baseUrl,
+): string {
+  const url = new URL(streamPath, apiBaseUrl)
+  if (url.protocol === 'http:') url.protocol = 'ws:'
+  else if (url.protocol === 'https:') url.protocol = 'wss:'
+  else throw new Error('Web Shell stream must use the same HTTP origin')
+  if (url.origin.replace(/^ws/, 'http') !== new URL(apiBaseUrl).origin) {
+    throw new Error('Web Shell stream must use the same origin')
+  }
+  return url.href
+}
+
+export function webShellSocket(streamPath: string): WebSocket {
+  return new WebSocket(resolveWebShellSocketUrl(streamPath))
 }
 
 export function runEventSource(runId: string, after = 0): EventSource {

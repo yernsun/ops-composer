@@ -17,6 +17,11 @@ The generated OpenAPI type file is `src/shared/api/schema.d.ts`. The browser cli
 mutations. RunEvent streaming uses one `run-event` SSE event whose payload contains `eventType` and
 `sequence`; reconnects continue from the highest persisted sequence.
 
+The dedicated Web Shell route uses xterm.js outside the normal sidebar layout. It creates a server
+session through the CSRF-protected REST API, then uses only the returned same-origin WebSocket path;
+never put a token or terminal content in a URL, Vue Query cache, Pinia, or browser storage. Vite's
+`/api` proxy must enable WebSocket forwarding.
+
 Production assets are built into the Python/Ansible image and served by FastAPI with SPA history
 fallback. Vite's proxy exists only for local development. Route-level dynamic imports keep page
 bundles independent.

@@ -12,6 +12,7 @@ Use this page to route an engineering change to the rule set that owns it. Start
 | Login, sessions, cookies, CSRF, or bootstrap | [Authentication](architecture/auth.md) | One CLI-created administrator; PostgreSQL opaque sessions and rate limits |
 | Run queue, Lease, Host Lock, or SSE | [OpsComposer design](ops-composer-design.md) | PostgreSQL is the only shared runtime dependency |
 | Playbook Web management, revisions, or source mode | [OpsComposer design §9](ops-composer-design.md#9-playbook-设计) | Database revisions are immutable; mounted files stay read-only |
+| Web Shell, PTY, WebSocket, or shared Host Lock | [OpsComposer design §5.7](ops-composer-design.md#57-web-shell-是连接绑定的临时执行) | Terminal bytes are ephemeral; Session, Origin, Ticket, lease, and host lock are mandatory |
 | Compose, Origin, keys, or runtime diagnosis | [FAQ](../FAQ.md) | Compare browser-visible values with resolved container configuration |
 
 Run the governed checks from the repository root after a change:

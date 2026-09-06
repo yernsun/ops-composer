@@ -5,6 +5,13 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'overview', component: () => import('@/pages/DashboardPage.vue') },
     { path: '/hosts', name: 'hosts', component: () => import('@/pages/HostsPage.vue') },
+    {
+      path: '/hosts/:hostId/shell',
+      name: 'web-shell',
+      component: () => import('@/pages/WebShellPage.vue'),
+      props: true,
+      meta: { layout: 'terminal' },
+    },
     { path: '/groups', name: 'groups', component: () => import('@/pages/GroupsPage.vue') },
     { path: '/credentials', name: 'credentials', component: () => import('@/pages/CredentialsPage.vue') },
     { path: '/commands', name: 'commands', component: () => import('@/pages/CommandPage.vue') },

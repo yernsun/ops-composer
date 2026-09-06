@@ -25,6 +25,7 @@ Psycopg 3 async pool、Ansible Runner、Argon2id 和 AES-256-GCM。
 - 单管理员登录；管理员只能通过交互式 CLI 初始化，无注册或 Workspace API。
 - Host、Group、PASSWORD Credential 与不可变 Credential Revision。
 - SSH Host Key 扫描、指纹确认和每次 Run 的临时 `known_hosts`。
+- 主机操作区 Web Shell：新窗口完整 PTY、xterm.js、严格 Host Key 校验，且不保存终端内容。
 - Ping、Command、需二次确认的 Shell，以及数据库或只读挂载来源的 Playbook。
 - 创建 Run 时固化目标、Inventory、Credential 版本及 Playbook revision/哈希；重试创建带
   `sourceRunId` 的新 Run。
@@ -86,6 +87,25 @@ Playbook 是隔离的单 YAML 项目，不能隐式读取挂载目录中的 role
 `both` 模式缺少挂载目录时，System Doctor 标记为降级，但数据库来源仍可使用。同名 Playbook
 按“来源 + 引用”并存，不会覆盖。Playbook YAML 属于可信代码，以明文保存在 PostgreSQL，
 不得写入 Credential 或部署 Secret。不得挂载 Docker Socket。
+
+## Web Shell
+
+在主机列表确认风险后可打开独立全屏 Web Shell。它使用同源 WebSocket、OpenSSH、`sshpass`、`setsid` 和本地 PTY，
+不会经过 Worker，也不是可回放 Run。终端输入、输出和录像均不写入数据库、日志或审计；仅记录
+会话申请、开始、结束、超时和安全错误等生命周期事件。
+
+Web Shell 与 Run 共用数据库 Host Lock，同一主机同时只允许一个执行。会话默认全局最多 5 个、
+空闲 30 分钟关闭、最长 8 小时，可通过以下变量调整：
+
+```text
+OPS_COMPOSER_WEB_SHELL_MAX_SESSIONS=5
+OPS_COMPOSER_WEB_SHELL_IDLE_TIMEOUT_SECONDS=1800
+OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS=28800
+```
+
+连接要求主机已启用、PASSWORD Credential 可用并已人工确认 Host Key。密码仅通过匿名 pipe 交给
+`sshpass -d`，不会进入参数、环境变量或文件。生产反向代理必须转发 WebSocket `Upgrade`，并将
+连接超时设置为大于 Web Shell 最长会话时间；浏览器 Origin 必须出现在 `APP_ALLOWED_ORIGINS`。
 
 ## 开发环境
 
@@ -151,6 +171,14 @@ npm run build
 TEST_DATABASE_URL=postgresql://... uv run pytest 'tests/test_*postgres.py'
 ```
 
+Web Shell 的真实 OpenSSH/PTY 验收使用独立测试 Compose，不会加入生产栈：
+
+```bash
+TEST_SSH_PASSWORD="$(openssl rand -hex 16)" docker compose -f docker-compose.test.yml up -d --build
+TEST_SSH_PASSWORD=<同一临时值> TEST_SSH_PORT=22222 uv run pytest tests/test_web_shell_ssh.py
+docker compose -f docker-compose.test.yml down
+```
+
 启用 Docker Compose 配置门禁：
 
 ```bash
@@ -168,6 +196,7 @@ HARNESS_DOCKER=1 python3 harness/check.py
   `0700`，成功、失败和重启恢复均清理。
 - Host/Group variables 禁止覆盖 `ansible_password` 等敏感或控制性字段。
 - 挂载 Playbook 验证 Workspace 边界和创建时哈希；数据库 Playbook 执行不可变固定 revision。
+- Web Shell 使用一次性、登录 Session 绑定的 30 秒 Ticket；刷新、断线或关窗会终止 SSH 并释放 Host Lock。
 
 架构约束导航见 [docs/README.md](docs/README.md)，Project Forge 更新前请先阅读
 [AGENTS.md](AGENTS.md)。

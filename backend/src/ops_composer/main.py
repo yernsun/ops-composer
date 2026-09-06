@@ -18,6 +18,7 @@ from ops_composer.api.observability import RequestContextMiddleware, configure_l
 from ops_composer.api.playbooks import router as playbooks_router
 from ops_composer.api.runs import router as runs_router
 from ops_composer.api.system import router as system_router
+from ops_composer.api.web_shell import router as web_shell_router
 from ops_composer.auth.api import router as auth_router
 from ops_composer.db.migration_engine import MigrationRunner
 from ops_composer.db.pool import create_pool
@@ -34,6 +35,7 @@ from ops_composer.services.audit import AuditService, new_audit_event
 from ops_composer.services.crypto import CredentialCipher
 from ops_composer.settings import get_settings
 from ops_composer.uow.factory import UnitOfWorkFactory
+from ops_composer.web_shell_manager import WebShellManager
 
 
 class SpaStaticFiles(StaticFiles):
@@ -78,6 +80,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         raise
     audit_service: AuditService | None = None
+    web_shell_manager: WebShellManager | None = None
     ready = False
     try:
         try:
@@ -137,6 +140,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             raise
         app.state.database_pool = pool
         app.state.unit_of_work_factory = factory
+        web_shell_manager = WebShellManager(factory, settings, cipher)
+        await web_shell_manager.start()
+        app.state.web_shell_manager = web_shell_manager
         await audit_service.record_best_effort(
             new_audit_event(
                 AuditAction.APP_READY,
@@ -147,6 +153,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ready = True
         yield
     finally:
+        if web_shell_manager is not None:
+            await web_shell_manager.stop()
         if audit_service is not None and ready:
             await audit_service.record_best_effort(
                 new_audit_event(
@@ -184,6 +192,7 @@ def create_app() -> FastAPI:
     application.include_router(playbooks_router)
     application.include_router(runs_router)
     application.include_router(system_router)
+    application.include_router(web_shell_router)
     install_error_handlers(application)
     static_dir = Path(settings.static_dir)
     if (static_dir / "index.html").is_file():

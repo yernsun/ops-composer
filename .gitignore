@@ -11,6 +11,7 @@ __pycache__/
 *.rej
 backend/.venv/
 frontend/dist/
+frontend/coverage/
 frontend/node_modules/
 frontend/playwright-report/
 frontend/test-results/

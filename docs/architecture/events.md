@@ -11,3 +11,7 @@ Its JSON payload carries the durable event type and sequence. `Last-Event-ID` an
 All runner payloads pass secret-key filtering and value redaction before insertion. Event and
 per-host output have byte limits. Browser disconnects do not cancel execution, and API process
 restarts do not affect queued or running work owned by the Worker lease.
+
+Web Shell is deliberately separate: its binary WebSocket stream is connection-bound and never
+enters `run_events`. Terminal input/output is not persisted; only lifecycle audit is durable, and a
+browser disconnect terminates its OpenSSH PTY and shared host lock.

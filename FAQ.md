@@ -44,6 +44,18 @@ disables Web-managed database Playbooks.
 No. Events are committed to PostgreSQL with increasing sequence values before SSE delivery.
 Refresh and reconnect resume from the highest sequence and the query API can replay history.
 
+## Why can Web Shell not connect?
+
+Verify that the host is enabled, its PASSWORD credential is enabled, and its current SSH host key
+was scanned and manually confirmed in Hosts. `host_busy` means a Run or another Web Shell owns the
+host lock; `web_shell_capacity_reached` means the global limit is full. A wrong port/password or a
+changed host key makes OpenSSH fail closed; OpsComposer never accepts a new fingerprint silently.
+
+If the page opens but the WebSocket immediately closes, ensure the reverse proxy forwards Upgrade
+requests, permits a connection longer than `OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS`, and the
+browser Origin is in `APP_ALLOWED_ORIGINS`. Refresh and window close intentionally destroy the PTY;
+Reconnect always creates a new session.
+
 ## Why are integration tests skipped?
 
 PostgreSQL tests require a dedicated `TEST_DATABASE_URL`; Compose and SSH acceptance require a

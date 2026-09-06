@@ -121,13 +121,29 @@ async def test_cli_runner_and_application_lifespan_close_their_pools(
             ensured.append(True)
 
     monkeypatch.setattr(main_module, "CredentialService", _CredentialService)
+
+    manager_lifecycle: list[str] = []
+
+    class _WebShellManager:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            manager_lifecycle.append("started")
+
+        async def stop(self) -> None:
+            manager_lifecycle.append("stopped")
+
+    monkeypatch.setattr(main_module, "WebShellManager", _WebShellManager)
     application = FastAPI()
     async with main_module.lifespan(application):
         assert application.state.database_pool is app_pool
         assert isinstance(application.state.unit_of_work_factory, UnitOfWorkFactory)
         assert created_runners[-1].current_validated
         assert ensured == [True]
+        assert manager_lifecycle == ["started"]
     assert app_pool.opened and app_pool.closed
+    assert manager_lifecycle == ["started", "stopped"]
 
 
 def test_migration_and_configuration_cli_commands_cover_operator_outputs(

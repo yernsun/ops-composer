@@ -239,6 +239,34 @@ function scanKeys(host: HostDto, resumeTest = false): void {
   scannedKeys.value = []
   scanMutation.mutate(host.hostId)
 }
+
+function openWebShell(host: HostDto): void {
+  confirm.require({
+    header: t('hosts.webShellConfirmTitle'),
+    message: t('hosts.webShellConfirmMessage', { name: host.name }),
+    icon: 'pi pi-exclamation-triangle',
+    rejectProps: { label: t('common.cancel'), severity: 'secondary', outlined: true },
+    acceptProps: { label: t('hosts.openWebShell'), severity: 'warn' },
+    accept: () => {
+      const href = router.resolve({
+        name: 'web-shell',
+        params: { hostId: host.hostId },
+      }).href
+      const opened = window.open('about:blank', '_blank')
+      if (!opened) {
+        toast.add({
+          severity: 'warn',
+          summary: t('hosts.webShellPopupBlocked'),
+          detail: t('hosts.webShellPopupHint'),
+          life: 8000,
+        })
+        return
+      }
+      opened.opener = null
+      opened.location.href = new URL(href, window.location.href).href
+    },
+  })
+}
 </script>
 
 <template>
@@ -290,6 +318,14 @@ function scanKeys(host: HostDto, resumeTest = false): void {
           <template #body="{ data }">
             <div class="row-actions">
               <Button icon="pi pi-pencil" text rounded :aria-label="t('common.edit')" @click="editHost(data)" />
+              <Button
+                icon="pi pi-terminal"
+                :label="t('hosts.webShell')"
+                text
+                size="small"
+                :disabled="!data.enabled"
+                @click="openWebShell(data)"
+              />
               <Button icon="pi pi-shield" :label="t('hosts.scanKey')" text size="small" :loading="scanMutation.isPending.value && keyHost?.hostId === data.hostId" @click="scanKeys(data)" />
               <Button icon="pi pi-bolt" :label="t('hosts.test')" text size="small" :loading="testMutation.isPending.value" @click="testMutation.mutate(data.hostId)" />
               <Button icon="pi pi-trash" severity="danger" text rounded :aria-label="t('common.delete')" @click="removeHost(data)" />

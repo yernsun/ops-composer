@@ -56,6 +56,17 @@ Worker Lease 过期时，数据库恢复流程会把仍在 PREPARING/RUNNING 的
 不会。事件先按递增 sequence 写入 PostgreSQL，再通过短轮询 SSE 发送。刷新或重连时前端
 从最高 sequence 继续，历史也可通过事件查询接口回放。
 
+## 为什么 Web Shell 无法连接？
+
+先确认主机已启用、PASSWORD Credential 有效，并在主机管理中扫描且人工确认了当前 SSH Host
+Key。`host_busy` 表示该主机已被 Run 或另一个 Web Shell 占用；
+`web_shell_capacity_reached` 表示全局会话已满。错误端口、密码错误或远端 Host Key 变化会使
+OpenSSH fail closed，不会自动接受新指纹。
+
+如果页面能打开但 WebSocket 立即断开，请检查反向代理是否转发 `Upgrade`/`Connection` 头、
+代理读写超时是否大于 `OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS`，以及浏览器 Origin 是否在
+`APP_ALLOWED_ORIGINS`。刷新和关窗会按设计结束当前 PTY；重新连接始终创建新会话。
+
 ## 为什么真实集成测试被跳过？
 
 设置专用的 `TEST_DATABASE_URL` 才会运行 PostgreSQL 集成测试。Compose/SSH 验收还需要可用

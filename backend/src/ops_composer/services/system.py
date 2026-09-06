@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from ops_composer.settings import Settings
@@ -22,6 +23,9 @@ class SystemService:
         workspace = Path(self._settings.playbook_workspace)
         mount_directory = workspace / "playbooks"
         mount_ok = mount_directory.is_dir() if mount_enabled else None
+        ssh_client = shutil.which("ssh") is not None
+        password_helper = shutil.which("sshpass") is not None
+        session_helper = shutil.which("setsid") is not None
         return {
             "database": {"ok": database_ok},
             "playbookWorkspace": {
@@ -47,6 +51,15 @@ class SystemService:
                     "readOnly": True,
                     "ok": mount_ok,
                 },
+            },
+            "webShell": {
+                "ok": ssh_client and password_helper and session_helper,
+                "sshClient": ssh_client,
+                "passwordHelper": password_helper,
+                "sessionHelper": session_helper,
+                "maxSessions": self._settings.web_shell_max_sessions,
+                "idleTimeoutSeconds": self._settings.web_shell_idle_timeout_seconds,
+                "maxDurationSeconds": self._settings.web_shell_max_duration_seconds,
             },
             "middlewareDependencies": [],
         }

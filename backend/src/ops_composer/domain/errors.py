@@ -83,5 +83,27 @@ class RunNotCancelableError(ConflictError):
     public_message = "run is already in a terminal state"
 
 
+class HostBusyError(ConflictError):
+    code = "host_busy"
+    public_message = "host is busy with another execution"
+
+
+class WebShellCapacityError(ConflictError):
+    code = "web_shell_capacity_reached"
+    public_message = "Web Shell session capacity has been reached"
+
+
+class WebShellSessionExpiredError(ConflictError):
+    code = "web_shell_session_expired"
+    status_code = 410
+    public_message = "Web Shell session expired"
+
+
+class WebShellUnavailableError(OpsError):
+    code = "web_shell_unavailable"
+    status_code = 503
+    public_message = "Web Shell is unavailable"
+
+
 class ClaimCollisionError(RuntimeError):
     """Roll back a queue claim when another run wins a shared Host Lock."""

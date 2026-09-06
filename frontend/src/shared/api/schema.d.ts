@@ -249,6 +249,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/hosts/{host_id}/web-shell-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Web Shell Session */
+        post: operations["createWebShellSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/inventory/preview": {
         parameters: {
             query?: never;
@@ -586,6 +603,23 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/web-shell-sessions/{web_shell_session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Close Web Shell Session */
+        delete: operations["closeWebShellSession"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1439,6 +1473,38 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** WebShellSessionResponse */
+        WebShellSessionResponse: {
+            /** Address */
+            address: string;
+            /**
+             * Hostid
+             * Format: uuid
+             */
+            hostId: string;
+            /** Hostname */
+            hostName: string;
+            /** Idletimeoutseconds */
+            idleTimeoutSeconds: number;
+            /** Maxdurationseconds */
+            maxDurationSeconds: number;
+            /** Sshport */
+            sshPort: number;
+            /** Streampath */
+            streamPath: string;
+            /**
+             * Ticketexpiresat
+             * Format: date-time
+             */
+            ticketExpiresAt: string;
+            /** Username */
+            username: string;
+            /**
+             * Webshellsessionid
+             * Format: uuid
+             */
+            webShellSessionId: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2138,6 +2204,37 @@ export interface operations {
             };
         };
     };
+    createWebShellSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                host_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebShellSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     previewInventory: {
         parameters: {
             query?: never;
@@ -2796,6 +2893,35 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    closeWebShellSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                web_shell_session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

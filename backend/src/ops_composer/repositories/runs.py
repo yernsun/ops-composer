@@ -263,8 +263,8 @@ class PostgresRunRepository(BaseRepository):
         )
         await self.connection.execute(
             sql.SQL(
-                "UPDATE host_run_locks SET expires_at = %(expires_at)s "
-                "WHERE worker_id = %(worker_id)s"
+                "UPDATE host_execution_locks SET expires_at = %(expires_at)s "
+                "WHERE owner_id = %(worker_id)s AND run_id IS NOT NULL"
             ),
             {"worker_id": worker_id, "expires_at": expires_at},
             prepare=True,
@@ -278,7 +278,7 @@ class PostgresRunRepository(BaseRepository):
                 "WITH candidate AS ("
                 "SELECT r.run_id FROM runs r WHERE r.status = 'QUEUED' "
                 "AND NOT EXISTS (SELECT 1 FROM run_targets rt "
-                "JOIN host_run_locks hl ON hl.host_id = rt.host_id "
+                "JOIN host_execution_locks hl ON hl.host_id = rt.host_id "
                 "WHERE rt.run_id = r.run_id AND hl.expires_at > %(now)s) "
                 "ORDER BY r.created_at, r.run_id FOR UPDATE OF r SKIP LOCKED LIMIT 1"
                 ") UPDATE runs r SET status = 'PREPARING', claimed_by = %(worker_id)s, "
@@ -293,10 +293,14 @@ class PostgresRunRepository(BaseRepository):
         run = _run(row)
         locked_rows = await self.connection.fetch_all(
             sql.SQL(
-                "INSERT INTO host_run_locks (host_id, run_id, worker_id, acquired_at, expires_at) "
-                "SELECT host_id, %(run_id)s, %(worker_id)s, %(now)s, %(expires_at)s "
+                "INSERT INTO host_execution_locks (host_id, run_id, owner_id, acquired_at, "
+                "expires_at, web_shell_session_id) "
+                "SELECT host_id, %(run_id)s, %(worker_id)s, %(now)s, %(expires_at)s, NULL "
                 "FROM run_targets WHERE run_id = %(run_id)s ORDER BY host_id "
-                "ON CONFLICT (host_id) DO NOTHING RETURNING host_id"
+                "ON CONFLICT (host_id) DO UPDATE SET run_id = EXCLUDED.run_id, "
+                "owner_id = EXCLUDED.owner_id, acquired_at = EXCLUDED.acquired_at, "
+                "expires_at = EXCLUDED.expires_at, web_shell_session_id = NULL "
+                "WHERE host_execution_locks.expires_at <= %(now)s RETURNING host_id"
             ),
             {
                 "run_id": run.run_id,
@@ -328,8 +332,8 @@ class PostgresRunRepository(BaseRepository):
                 "targets AS (UPDATE run_targets SET status = 'INTERRUPTED', "
                 "finished_at = %(now)s WHERE run_id IN (SELECT run_id FROM interrupted) "
                 "AND status IN ('PENDING', 'RUNNING') RETURNING run_id), "
-                "released AS (DELETE FROM host_run_locks WHERE expires_at <= %(now)s "
-                "OR run_id IN (SELECT run_id FROM interrupted) RETURNING host_id) "
+                "released AS (DELETE FROM host_execution_locks WHERE expires_at <= %(now)s "
+                "OR (run_id IN (SELECT run_id FROM interrupted)) RETURNING host_id) "
                 "SELECT count(*) AS count FROM interrupted"
             ),
             {"now": now},
@@ -408,7 +412,7 @@ class PostgresRunRepository(BaseRepository):
             prepare=True,
         )
         await self.connection.execute(
-            sql.SQL("DELETE FROM host_run_locks WHERE run_id = %(run_id)s"),
+            sql.SQL("DELETE FROM host_execution_locks WHERE run_id = %(run_id)s"),
             {"run_id": run_id},
             prepare=True,
         )

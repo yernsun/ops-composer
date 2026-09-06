@@ -286,9 +286,9 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
                 )
                 await connection.execute(
                     sql.SQL(
-                        "UPDATE host_run_locks SET acquired_at = %(stale_started)s, "
+                        "UPDATE host_execution_locks SET acquired_at = %(stale_started)s, "
                         "expires_at = %(expired)s "
-                        "WHERE worker_id = %(worker_id)s"
+                        "WHERE owner_id = %(worker_id)s"
                     ),
                     {
                         "stale_started": stale_started,
