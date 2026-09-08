@@ -59,6 +59,7 @@ class SessionResponse(StrictApiModel):
     username: str
     role: UserRole
     permissions: list[Permission]
+    totp_policy_enabled: bool
     mfa_enabled: bool
     mfa_enrollment_required: bool
     mfa_verified_at: AwareDatetime | None
@@ -90,7 +91,7 @@ class ActivationRequest(AuthApiModel):
 
 class ReauthenticateRequest(AuthApiModel):
     password: SecretStr = Field(min_length=1, max_length=200, repr=False)
-    mfa_value: SecretStr = Field(min_length=6, max_length=64, repr=False)
+    mfa_value: SecretStr | None = Field(default=None, min_length=6, max_length=64, repr=False)
 
 
 class UserResponse(StrictApiModel):
@@ -117,6 +118,7 @@ class CreatedUserResponse(StrictApiModel):
 
 
 class SecurityStatusResponse(StrictApiModel):
+    totp_policy_enabled: bool
     mfa_enabled: bool
     mfa_enrollment_required: bool
     unused_recovery_codes: int
@@ -287,6 +289,7 @@ def _response(principal: SessionPrincipal) -> SessionResponse:
         username=principal.username,
         role=principal.role,
         permissions=sorted(principal.permissions, key=lambda item: item.value),
+        totp_policy_enabled=get_settings().totp_enabled,
         mfa_enabled=principal.mfa_enabled,
         mfa_enrollment_required=principal.mfa_enrollment_required,
         mfa_verified_at=principal.mfa_verified_at,
@@ -457,7 +460,7 @@ async def reauthenticate(
     elevated = await _service(unit_of_work_factory).reauthenticate(
         principal,
         request.password.get_secret_value(),
-        request.mfa_value.get_secret_value(),
+        request.mfa_value.get_secret_value() if request.mfa_value is not None else None,
     )
     return _response(elevated)
 

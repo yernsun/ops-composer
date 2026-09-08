@@ -46,6 +46,7 @@ def _principal() -> SessionPrincipal:
         user_id=uuid4(),
         username="admin",
         csrf_hash="csrf-hash",
+        reauthenticated_at=now,
         elevated_until=now + timedelta(minutes=10),
         expires_at=now + timedelta(days=1),
     )

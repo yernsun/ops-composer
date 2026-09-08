@@ -22,6 +22,7 @@ from ops_composer.db.migrations.keyring import KEYRING
 from ops_composer.db.migrations.ops_composer import OPS_COMPOSER
 from ops_composer.db.migrations.playbook_projects import PLAYBOOK_PROJECTS
 from ops_composer.db.migrations.playbooks import PLAYBOOKS
+from ops_composer.db.migrations.totp_policy import TOTP_POLICY
 from ops_composer.db.migrations.web_shell import WEB_SHELL
 from ops_composer.db.types import DbConnection
 from ops_composer.domain.audit import AuditAction
@@ -201,6 +202,7 @@ def test_ops_composer_p2_schema_is_forward_only_and_postgresql_native() -> None:
     result = ordered_migrations(
         (
             PLAYBOOK_PROJECTS,
+            TOTP_POLICY,
             KEYRING,
             GOVERNANCE,
             WEB_SHELL,
@@ -223,6 +225,7 @@ def test_ops_composer_p2_schema_is_forward_only_and_postgresql_native() -> None:
         "0070_multi_admin_governance",
         "0080_credential_keyring",
         "0090_playbook_projects",
+        "0100_totp_policy",
     ]
     schema_sql = OPS_COMPOSER.up_sql.lower()
     assert "jsonb" in schema_sql
@@ -256,6 +259,12 @@ def test_ops_composer_p2_schema_is_forward_only_and_postgresql_native() -> None:
     assert "pending_activation" in governance_sql
     assert "at least one active owner" in governance_sql
     assert "user_mfa_factors" in governance_sql
+
+    totp_policy_sql = TOTP_POLICY.up_sql.lower()
+    assert "reauthenticated_at" in totp_policy_sql
+    assert "greatest(mfa_verified_at, created_at)" in totp_policy_sql
+    assert "drop constraint sessions_elevation_check" in totp_policy_sql
+    assert "mfa_verified_at" in totp_policy_sql
 
     keyring_sql = KEYRING.up_sql.lower()
     assert "ssh_private_key" in keyring_sql

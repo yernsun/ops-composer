@@ -63,6 +63,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         source=AuditSource.SYSTEM,
         message="API process is starting",
     )
+    if not settings.totp_enabled:
+        log_event(
+            AuditAction.APP_STARTING,
+            AuditOutcome.STARTED,
+            source=AuditSource.SYSTEM,
+            severity=AuditSeverity.WARNING,
+            message="TOTP authentication is disabled by deployment policy",
+            error_code="totp_policy_disabled",
+            failure_stage="authentication_policy",
+            retryable=False,
+            metadata={"security_degraded": True},
+        )
     pool = create_pool(settings.database_url)
     try:
         await pool.open()

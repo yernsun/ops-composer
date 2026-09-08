@@ -11,6 +11,7 @@ import { useI18n } from 'vue-i18n'
 import { api, ApiRequestError } from '@/shared/api/client'
 
 import { applySessionTransition } from './session'
+import { useAuthorization } from './authorization'
 
 const props = defineProps<{
   visible: boolean
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const queryClient = useQueryClient()
+const { totpPolicyEnabled } = useAuthorization()
 const password = ref('')
 const mfaValue = ref('')
 const error = ref('')
@@ -38,7 +40,10 @@ watch(
 )
 
 const mutation = useMutation({
-  mutationFn: () => api.reauthenticate({ password: password.value, mfaValue: mfaValue.value }),
+  mutationFn: () => api.reauthenticate({
+    password: password.value,
+    mfaValue: totpPolicyEnabled.value ? mfaValue.value : null,
+  }),
   onSuccess: async (session) => {
     password.value = ''
     mfaValue.value = ''
@@ -53,7 +58,15 @@ const mutation = useMutation({
   },
 })
 
-const canSubmit = computed(() => password.value.length > 0 && mfaValue.value.trim().length >= 6)
+const canSubmit = computed(
+  () => password.value.length > 0 && (
+    !totpPolicyEnabled.value || mfaValue.value.trim().length >= 6
+  ),
+)
+const effectiveReason = computed(() => {
+  if (!totpPolicyEnabled.value) return t('auth.passwordReauthenticationHint')
+  return props.reason || t('auth.reauthenticationHint')
+})
 </script>
 
 <template>
@@ -67,7 +80,7 @@ const canSubmit = computed(() => password.value.length > 0 && mfaValue.value.tri
     <Fluid>
       <form id="reauthentication-form" class="form-stack" @submit.prevent="mutation.mutate()">
         <Message severity="warn" :closable="false">
-          {{ reason || t('auth.reauthenticationHint') }}
+          {{ effectiveReason }}
         </Message>
         <div class="field">
           <label for="reauth-password">{{ t('auth.password') }}</label>
@@ -81,7 +94,7 @@ const canSubmit = computed(() => password.value.length > 0 && mfaValue.value.tri
             autofocus
           />
         </div>
-        <div class="field">
+        <div v-if="totpPolicyEnabled" class="field">
           <label for="reauth-mfa">{{ t('auth.mfaValue') }}</label>
           <Password
             id="reauth-mfa"

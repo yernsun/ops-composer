@@ -10,6 +10,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import TargetPicker, { type TargetValue } from '@/components/TargetPicker.vue'
 import AuthPanel from '@/features/auth/AuthPanel.vue'
+import ReauthenticateDialog from '@/features/auth/ReauthenticateDialog.vue'
 import AppShell from '@/layout/AppShell.vue'
 import AuditPage from '@/pages/AuditPage.vue'
 import CommandPage from '@/pages/CommandPage.vue'
@@ -143,6 +144,7 @@ const session = {
     'run:standard', 'run:shell', 'run:cancel', 'web-shell:open',
     'audit:read', 'user:read', 'user:manage', 'key:rotate',
   ],
+  totpPolicyEnabled: true,
   mfaEnabled: true,
   mfaEnrollmentRequired: false,
   mfaVerifiedAt: timestamp,
@@ -408,6 +410,10 @@ beforeEach(() => {
       projectForgeTemplateDigest: 'test',
       playbookWorkspace: '/workspace',
       playbookSourceMode: 'both',
+      authentication: {
+        totpPolicyEnabled: true,
+        securityDegraded: false,
+      },
       webShell: {
         enabled: true,
         maxSessions: 5,
@@ -416,6 +422,12 @@ beforeEach(() => {
       },
     },
     'system-doctor': {
+      status: 'ok',
+      authentication: {
+        totpPolicyEnabled: true,
+        securityDegraded: false,
+        issueCode: null,
+      },
       database: { ok: true },
       playbookWorkspace: { ok: true, readOnlyExpected: true, path: '/workspace' },
       middlewareDependencies: [],
@@ -620,6 +632,49 @@ describe('PrimeVue application views', () => {
     await flushPromises()
     expect(application.exists()).toBe(true)
     application.unmount()
+  })
+
+  it('uses password-only reauthentication when the deployment disables TOTP', async () => {
+    const disabledSession = {
+      ...session,
+      totpPolicyEnabled: false,
+      mfaVerifiedAt: null,
+    } satisfies SessionDto
+    state.queries.auth = disabledSession
+    const reauthenticate = vi
+      .spyOn(api, 'reauthenticate')
+      .mockResolvedValue(disabledSession)
+
+    const dialog = shallowMount(ReauthenticateDialog, {
+      ...mountOptions(),
+      props: { visible: true },
+    })
+    await flushPromises()
+
+    expect(dialog.find('#reauth-password').exists()).toBe(true)
+    expect(dialog.find('#reauth-mfa').exists()).toBe(false)
+    expect(dialog.text()).toContain('auth.passwordReauthenticationHint')
+
+    const view = dialog.vm as unknown as {
+      password: string
+      mutation: { mutate: () => void }
+    }
+    reauthenticate.mockClear()
+    view.password = 'password-only-test-value'
+    view.mutation.mutate()
+    await flushPromises()
+
+    expect(reauthenticate).toHaveBeenCalledWith({
+      password: 'password-only-test-value',
+      mfaValue: null,
+    })
+    dialog.unmount()
+
+    const security = shallowMount(SecurityPage, mountOptions())
+    await flushPromises()
+    expect(security.text()).toContain('security.totpPolicyDisabled')
+    expect(security.find('#password-mfa').exists()).toBe(false)
+    security.unmount()
   })
 
   it('starts a host-key scan when a connection test needs explicit trust', async () => {

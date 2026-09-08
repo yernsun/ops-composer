@@ -25,6 +25,18 @@ The command is limited to the sole active OWNER, requires an exact confirmation 
 the new password twice from a hidden prompt. It never accepts the password on argv, revokes every
 session after success, and leaves MFA unchanged.
 
+## Can TOTP be disabled for a password-only deployment?
+
+Yes. Set `OPS_COMPOSER_TOTP_ENABLED=false` and restart the coordinated API/Worker release. Login,
+activation, password changes, and the ten-minute sensitive-operation reauthentication window then
+use passwords only; no TOTP seed is generated or returned. Existing encrypted factors and recovery
+codes remain in PostgreSQL. Re-enabling the setting rejects sessions created without MFA and
+resumes confirmed factors. Production permits this explicit override, but startup logs and System
+Doctor report `totp_policy_disabled` and a degraded security state.
+
+If a seed has been exposed, run the audited `ops-composer admin mfa-reset --username <name>` before
+re-enabling TOTP. The CLI accepts `-h` as an alias for `--help` at every command level.
+
 ## Why does production configuration fail validation?
 
 Production requires a non-default PostgreSQL URL, HTTPS allowed origins, Secure cookies, a unique
@@ -79,9 +91,10 @@ Reconnect always creates a new session.
 
 The server checks the fixed role matrix in both its transport and Service layers. Operators cannot
 manage assets or open Shell/Web Shell, and auditors are read-only. Credential changes, user
-governance, and key rotation additionally require a password plus current TOTP or recovery code;
-that elevation expires after ten minutes. Reauthenticate and retry instead of relying on a hidden
-or cached frontend button.
+governance, and key rotation additionally require a password plus current TOTP or recovery code
+when the TOTP policy is enabled. With the policy disabled they require the password only; either
+elevation expires after ten minutes. Reauthenticate and retry instead of relying on a hidden or
+cached frontend button.
 
 ## Why are integration tests skipped?
 

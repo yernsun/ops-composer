@@ -71,6 +71,7 @@ def _auth_action(error: AuthError) -> AuditAction:
         "reauthentication_required": AuditAction.AUTH_PERMISSION_DENIED,
         "invalid_mfa_code": AuditAction.AUTH_MFA_FAILED,
         "invalid_auth_challenge": AuditAction.AUTH_MFA_FAILED,
+        "totp_disabled": AuditAction.AUTH_PERMISSION_DENIED,
         "activation_expired": AuditAction.REQUEST_REJECTED,
         "last_owner_required": AuditAction.REQUEST_REJECTED,
     }.get(error.code, AuditAction.REQUEST_REJECTED)

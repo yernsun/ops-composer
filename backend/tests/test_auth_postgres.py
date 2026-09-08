@@ -17,6 +17,7 @@ from ops_composer.auth.errors import (
     InvalidSessionError,
     LastOwnerRequiredError,
     PermissionDeniedError,
+    TotpDisabledError,
     UserVersionConflictError,
 )
 from ops_composer.auth.models import (
@@ -310,6 +311,214 @@ async def test_postgres_migrations_owner_mfa_sessions_and_shared_rate_limits() -
             assert audit_row["source"] == "CLI"
             assert audit_row["event_outcome"] == "SUCCEEDED"
             assert audit_row["metadata"]["sessions_revoked"] is True
+        finally:
+            await pool.close()
+    finally:
+        async with control_pool.connection() as connection:
+            await connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
+            )
+            await connection.commit()
+        await control_pool.close()
+
+
+@pytest.mark.asyncio
+async def test_totp_policy_disabled_uses_password_only_and_preserves_factors() -> None:
+    database_url = _database_url()
+    schema = f"ops_totp_policy_{uuid4().hex}"
+    control_pool = create_pool(database_url)
+    await control_pool.open()
+    try:
+        async with control_pool.connection() as connection:
+            await connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+            await connection.commit()
+
+        isolated_url = make_conninfo(database_url, options=f"-c search_path={schema}")
+        pool = create_pool(isolated_url)
+        await pool.open()
+        try:
+            base_settings = {
+                "app_env": "test",
+                "database_url": isolated_url,
+                "auth_rate_limit_secret": "totp-policy-integration-test-secret",
+                "auth_login_username_ip_limit": 100,
+                "auth_login_ip_limit": 100,
+            }
+            async with pool.connection() as connection:
+                await MigrationRunner(connection, MIGRATIONS).up()
+
+            enabled = AuthService(UnitOfWorkFactory(pool), Settings(**base_settings))
+            owner = await enabled.bootstrap("admin", "correct horse battery staple")
+            enrollment = await enabled.login(
+                "admin", "correct horse battery staple", "enabled-client"
+            )
+            assert isinstance(enrollment, IssuedChallenge)
+            assert enrollment.enrollment_secret is not None
+            secret = enrollment.enrollment_secret.get_secret_value()
+            completed = await enabled.complete_mfa(
+                enrollment.challenge_token.get_secret_value(),
+                totp_code(secret, int(utc_now().timestamp() // 30)),
+                expected_purpose=ChallengePurpose.MFA_ENROLLMENT,
+            )
+
+            disabled = AuthService(
+                UnitOfWorkFactory(pool), Settings(**base_settings, totp_enabled=False)
+            )
+            password_session = await disabled.login(
+                "admin", "correct horse battery staple", "disabled-client"
+            )
+            assert isinstance(password_session, IssuedSession)
+            assert password_session.principal.user_id == owner.user_id
+            assert password_session.principal.mfa_enabled
+            assert password_session.principal.mfa_verified_at is None
+            assert password_session.principal.reauthenticated_at is not None
+            assert password_session.principal.elevated_until is not None
+            assert (
+                await disabled.resolve(password_session.session_token.get_secret_value())
+            ).session_id == password_session.principal.session_id
+
+            security = await disabled.security_status(password_session.principal)
+            assert not security.totp_policy_enabled
+            assert security.mfa_enabled
+            with pytest.raises(TotpDisabledError):
+                await disabled.begin_mfa_enrollment(password_session.principal)
+            with pytest.raises(TotpDisabledError):
+                await disabled.complete_mfa("unused-challenge", "123456")
+            with pytest.raises(TotpDisabledError):
+                await disabled.regenerate_recovery_codes(password_session.principal)
+
+            reauthenticated = await disabled.reauthenticate(
+                password_session.principal,
+                "correct horse battery staple",
+                None,
+            )
+            assert reauthenticated.reauthenticated_at is not None
+            assert reauthenticated.mfa_verified_at is None
+
+            for role in (UserRole.ADMIN, UserRole.OPERATOR, UserRole.AUDITOR):
+                username = f"policy-{role.value.lower()}"
+                created = await disabled.create_user(
+                    reauthenticated,
+                    username=username,
+                    role=role,
+                )
+                activated = await disabled.activate(
+                    created.activation_code,
+                    f"{username} correct battery staple",
+                )
+                assert isinstance(activated, IssuedSession)
+                assert activated.principal.role is role
+                assert activated.principal.mfa_verified_at is None
+
+            async with pool.connection() as connection:
+                factor_count = await (
+                    await connection.execute(
+                        sql.SQL("SELECT count(*) AS total FROM user_mfa_factors")
+                    )
+                ).fetchone()
+            assert factor_count is not None
+            assert factor_count["total"] == 1
+
+            with pytest.raises(InvalidSessionError):
+                await enabled.resolve(password_session.session_token.get_secret_value())
+
+            await disabled.change_password(
+                reauthenticated,
+                current_password="correct horse battery staple",
+                new_password="replacement password battery staple",
+                mfa_value=None,
+            )
+            with pytest.raises(InvalidSessionError):
+                await disabled.resolve(password_session.session_token.get_secret_value())
+            with pytest.raises(InvalidSessionError):
+                await disabled.resolve(completed.issued.session_token.get_secret_value())
+        finally:
+            await pool.close()
+    finally:
+        async with control_pool.connection() as connection:
+            await connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
+            )
+            await connection.commit()
+        await control_pool.close()
+
+
+@pytest.mark.asyncio
+async def test_totp_policy_migration_backfills_recent_reauthentication() -> None:
+    database_url = _database_url()
+    schema = f"ops_totp_backfill_{uuid4().hex}"
+    control_pool = create_pool(database_url)
+    await control_pool.open()
+    try:
+        async with control_pool.connection() as connection:
+            await connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+            await connection.commit()
+
+        isolated_url = make_conninfo(database_url, options=f"-c search_path={schema}")
+        pool = create_pool(isolated_url)
+        await pool.open()
+        try:
+            user_id = uuid4()
+            session_id = uuid4()
+            now = utc_now()
+            mfa_verified_at = now
+            created_at = now + timedelta(milliseconds=1)
+            async with pool.connection() as connection:
+                applied = await MigrationRunner(connection, MIGRATIONS[:-1]).up()
+                assert applied == tuple(
+                    migration.migration_id for migration in MIGRATIONS[:-1]
+                )
+                await connection.execute(
+                    sql.SQL(
+                        "INSERT INTO users (user_id, username, password_hash, status, version, "
+                        "created_at, updated_at, password_updated_at, role, "
+                        "mfa_enrollment_required, activated_at) VALUES ("
+                        "%(user_id)s, %(username)s, %(password_hash)s, 'ACTIVE', 1, "
+                        "%(created_at)s, %(created_at)s, %(created_at)s, 'OWNER', FALSE, "
+                        "%(created_at)s)"
+                    ),
+                    {
+                        "user_id": user_id,
+                        "username": "migration-owner",
+                        "password_hash": "migration-password-hash",
+                        "created_at": now,
+                    },
+                )
+                await connection.execute(
+                    sql.SQL(
+                        "INSERT INTO sessions (session_id, user_id, token_hash, csrf_hash, "
+                        "expires_at, created_at, mfa_verified_at, elevated_until) VALUES ("
+                        "%(session_id)s, %(user_id)s, %(token_hash)s, %(csrf_hash)s, "
+                        "%(expires_at)s, %(created_at)s, %(mfa_verified_at)s, "
+                        "%(elevated_until)s)"
+                    ),
+                    {
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "token_hash": "a" * 64,
+                        "csrf_hash": "b" * 64,
+                        "expires_at": now + timedelta(hours=1),
+                        "created_at": created_at,
+                        "mfa_verified_at": mfa_verified_at,
+                        "elevated_until": now + timedelta(minutes=10),
+                    },
+                )
+                await connection.commit()
+                assert await MigrationRunner(connection, MIGRATIONS).up() == (
+                    "0100_totp_policy",
+                )
+                row = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT created_at, mfa_verified_at, reauthenticated_at "
+                            "FROM sessions WHERE session_id = %(session_id)s"
+                        ),
+                        {"session_id": session_id},
+                    )
+                ).fetchone()
+            assert row is not None
+            assert row["mfa_verified_at"] == mfa_verified_at
+            assert row["reauthenticated_at"] == created_at
         finally:
             await pool.close()
     finally:

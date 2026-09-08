@@ -55,7 +55,7 @@ async def test_web_shell_migration_capacity_ticket_lease_and_shared_host_lock(
         try:
             async with pool.connection() as connection:
                 applied = await MigrationRunner(connection, MIGRATIONS).up()
-                assert applied[-1] == "0090_playbook_projects"
+                assert applied[-1] == "0100_totp_policy"
                 await MigrationRunner(connection, MIGRATIONS).validate_current()
 
             master_key = base64.b64encode(b"0123456789abcdef" * 2).decode()

@@ -21,6 +21,7 @@ from ops_composer.auth.errors import (
     LastOwnerRequiredError,
     PermissionDeniedError,
     ReauthenticationRequiredError,
+    TotpDisabledError,
     UserConflictError,
     UserVersionConflictError,
 )
@@ -86,7 +87,11 @@ def require_permission(principal: SessionPrincipal, permission: Permission) -> N
 
 
 def require_recent_reauthentication(principal: SessionPrincipal) -> None:
-    if principal.elevated_until is None or principal.elevated_until <= utc_now():
+    if (
+        principal.reauthenticated_at is None
+        or principal.elevated_until is None
+        or principal.elevated_until <= utc_now()
+    ):
         raise ReauthenticationRequiredError()
 
 
@@ -126,6 +131,7 @@ AuthResult = IssuedSession | IssuedChallenge
 
 @dataclass(frozen=True, slots=True)
 class SecurityStatus:
+    totp_policy_enabled: bool
     mfa_enabled: bool
     mfa_enrollment_required: bool
     unused_recovery_codes: int
@@ -205,6 +211,7 @@ class AuthService:
         unit_of_work: UnitOfWork,
         user: UserIdentity,
         *,
+        mfa_enabled: bool = False,
         mfa_verified_at: datetime | None = None,
         elevated: bool = False,
     ) -> IssuedSession:
@@ -214,6 +221,7 @@ class AuthService:
         now = utc_now()
         session_id = uuid4()
         expires_at = now + self._session_ttl
+        reauthenticated_at = now if elevated else None
         elevated_until = now + REAUTHENTICATION_TTL if elevated else None
         await unit_of_work.auth.add_session(
             session_id=session_id,
@@ -223,6 +231,7 @@ class AuthService:
             expires_at=expires_at,
             created_at=now,
             mfa_verified_at=mfa_verified_at,
+            reauthenticated_at=reauthenticated_at,
             elevated_until=elevated_until,
         )
         return IssuedSession(
@@ -232,9 +241,10 @@ class AuthService:
                 username=user.username,
                 role=user.role,
                 permissions=permissions_for_role(user.role),
-                mfa_enabled=mfa_verified_at is not None,
+                mfa_enabled=mfa_enabled,
                 mfa_enrollment_required=user.mfa_enrollment_required,
                 mfa_verified_at=mfa_verified_at,
+                reauthenticated_at=reauthenticated_at,
                 elevated_until=elevated_until,
                 csrf_hash=csrf_hash,
                 expires_at=expires_at,
@@ -251,6 +261,7 @@ class AuthService:
         *,
         begin_enrollment: bool,
     ) -> IssuedChallenge:
+        self._require_totp_enabled()
         now = utc_now()
         token = generate_token()
         challenge_id = uuid4()
@@ -295,6 +306,15 @@ class AuthService:
             otpauth_uri=SecretStr(uri) if uri is not None else None,
         )
 
+    def _require_totp_enabled(self) -> None:
+        if not self._settings.totp_enabled:
+            error = TotpDisabledError()
+            error.audit_metadata = {
+                "totp_policy_enabled": False,
+                "authentication_factors": [],
+            }
+            raise error
+
     async def _consume_rate_limit(self, spec: RateLimitSpec) -> ConsumedRateLimit:
         now = utc_now()
         secret = self._settings.auth_rate_limit_secret.get_secret_value()
@@ -324,6 +344,8 @@ class AuthService:
                 "count": consumed.count,
                 "limit": consumed.maximum,
                 "retry_after_seconds": retry_after,
+                "totp_policy_enabled": self._settings.totp_enabled,
+                "authentication_factors": [],
             }
             raise error
         return consumed
@@ -363,6 +385,8 @@ class AuthService:
                     "subject_hash": username_ip_bucket.subject_hash,
                     "count": username_ip_bucket.count,
                     "limit": username_ip_bucket.maximum,
+                    "totp_policy_enabled": self._settings.totp_enabled,
+                    "authentication_factors": ["PASSWORD"],
                 }
                 raise error
             identity = user.identity
@@ -377,18 +401,26 @@ class AuthService:
                 window_started_at=username_ip_bucket.window_started_at,
             )
             factor = await unit_of_work.auth.get_mfa_factor(identity.user_id)
+            factor_enabled = factor is not None and factor.confirmed_at is not None
             enrollment_required = identity.mfa_enrollment_required or (
                 identity.role in MFA_REQUIRED_ROLES
-                and (factor is None or factor.confirmed_at is None)
+                and not factor_enabled
             )
-            if enrollment_required:
+            if not self._settings.totp_enabled:
+                result = await self._issue(
+                    unit_of_work,
+                    identity,
+                    mfa_enabled=factor_enabled,
+                    elevated=True,
+                )
+            elif enrollment_required:
                 result = await self._issue_challenge(
                     unit_of_work,
                     identity,
                     ChallengePurpose.MFA_ENROLLMENT,
                     begin_enrollment=True,
                 )
-            elif factor is not None and factor.confirmed_at is not None:
+            elif factor_enabled:
                 result = await self._issue_challenge(
                     unit_of_work,
                     identity,
@@ -396,7 +428,7 @@ class AuthService:
                     begin_enrollment=False,
                 )
             else:
-                result = await self._issue(unit_of_work, identity)
+                result = await self._issue(unit_of_work, identity, mfa_enabled=False)
             event = new_audit_event(
                 AuditAction.AUTH_LOGIN_SUCCEEDED,
                 AuditOutcome.SUCCEEDED,
@@ -415,6 +447,8 @@ class AuthService:
                 ),
                 metadata={
                     "password_rehashed": verification.needs_rehash,
+                    "totp_policy_enabled": self._settings.totp_enabled,
+                    "authentication_factors": ["PASSWORD"],
                     "next_step": (
                         "SESSION" if isinstance(result, IssuedSession) else result.purpose.value
                     ),
@@ -468,6 +502,7 @@ class AuthService:
         *,
         expected_purpose: ChallengePurpose | None = None,
     ) -> CompletedMfa:
+        self._require_totp_enabled()
         now = utc_now()
         event: AuditEventDraft | None = None
         completed: CompletedMfa | None = None
@@ -489,7 +524,12 @@ class AuthService:
                 secret = self._decrypt_totp(factor)
                 step = match_totp_step(secret, value, now=now.timestamp())
                 if step is None:
-                    raise InvalidMfaCodeError()
+                    error = InvalidMfaCodeError()
+                    error.audit_metadata = {
+                        "totp_policy_enabled": True,
+                        "authentication_factors": ["TOTP"],
+                    }
+                    raise error
                 await unit_of_work.auth.confirm_mfa_factor(user.user_id, now)
                 if not await unit_of_work.auth.accept_totp_step(user.user_id, step, now):
                     raise InvalidMfaCodeError()
@@ -502,11 +542,22 @@ class AuthService:
                     unit_of_work, factor, value, allow_recovery=True
                 )
                 if not verified:
-                    raise InvalidMfaCodeError()
+                    error = InvalidMfaCodeError()
+                    error.audit_metadata = {
+                        "totp_policy_enabled": True,
+                        "authentication_factors": ["TOTP_OR_RECOVERY_CODE"],
+                    }
+                    raise error
             if not await unit_of_work.auth.mark_challenge_consumed(challenge.challenge_id, now):
                 raise InvalidChallengeError()
             await unit_of_work.auth.delete_user_sessions(user.user_id)
-            issued = await self._issue(unit_of_work, user, mfa_verified_at=now, elevated=True)
+            issued = await self._issue(
+                unit_of_work,
+                user,
+                mfa_enabled=True,
+                mfa_verified_at=now,
+                elevated=True,
+            )
             completed = CompletedMfa(issued=issued, recovery_codes=recovery_codes)
             event = new_audit_event(
                 (
@@ -524,6 +575,12 @@ class AuthService:
                 session_id=issued.principal.session_id,
                 resource_type="user",
                 resource_id=user.user_id,
+                metadata={
+                    "totp_policy_enabled": True,
+                    "authentication_factors": [
+                        "RECOVERY_CODE" if used_recovery else "TOTP"
+                    ],
+                },
             )
             await unit_of_work.audit.append(event)
         if completed is None or event is None:
@@ -532,6 +589,7 @@ class AuthService:
         return completed
 
     async def begin_mfa_enrollment(self, principal: SessionPrincipal) -> IssuedChallenge:
+        self._require_totp_enabled()
         async with self._unit_of_work_factory() as unit_of_work:
             user = await unit_of_work.auth.get_user(principal.user_id)
             if user is None:
@@ -556,25 +614,49 @@ class AuthService:
         return challenge
 
     async def reauthenticate(
-        self, principal: SessionPrincipal, password: str, mfa_value: str
+        self, principal: SessionPrincipal, password: str, mfa_value: str | None
     ) -> SessionPrincipal:
         event: AuditEventDraft | None = None
         elevated: SessionPrincipal | None = None
         async with self._unit_of_work_factory() as unit_of_work:
             user = await unit_of_work.auth.find_user_by_username(principal.username)
-            factor = await unit_of_work.auth.get_mfa_factor(principal.user_id)
             verification = await asyncio.to_thread(
                 verify_password, user.credential.password_hash if user else None, password
             )
-            if user is None or not verification.valid or factor is None:
-                raise InvalidCredentialsError()
-            verified, used_recovery = await self._verify_mfa_value(
-                unit_of_work, factor, mfa_value, allow_recovery=True
-            )
-            if not verified:
-                raise InvalidMfaCodeError()
+            if user is None or not verification.valid:
+                credentials_error = InvalidCredentialsError()
+                credentials_error.audit_metadata = {
+                    "totp_policy_enabled": self._settings.totp_enabled,
+                    "authentication_factors": ["PASSWORD"],
+                }
+                raise credentials_error
+            used_recovery = False
+            authentication_factors = ["PASSWORD"]
+            if self._settings.totp_enabled:
+                factor = await unit_of_work.auth.get_mfa_factor(principal.user_id)
+                if factor is None or factor.confirmed_at is None or mfa_value is None:
+                    missing_mfa_error = InvalidMfaCodeError()
+                    missing_mfa_error.audit_metadata = {
+                        "totp_policy_enabled": True,
+                        "authentication_factors": ["PASSWORD"],
+                    }
+                    raise missing_mfa_error
+                verified, used_recovery = await self._verify_mfa_value(
+                    unit_of_work, factor, mfa_value, allow_recovery=True
+                )
+                if not verified:
+                    invalid_mfa_error = InvalidMfaCodeError()
+                    invalid_mfa_error.audit_metadata = {
+                        "totp_policy_enabled": True,
+                        "authentication_factors": ["PASSWORD", "TOTP_OR_RECOVERY_CODE"],
+                    }
+                    raise invalid_mfa_error
+                authentication_factors.append("RECOVERY_CODE" if used_recovery else "TOTP")
+            reauthenticated_at = utc_now()
             elevated = await unit_of_work.auth.elevate_session(
-                principal.session_id, utc_now() + REAUTHENTICATION_TTL
+                principal.session_id,
+                reauthenticated_at=reauthenticated_at,
+                elevated_until=reauthenticated_at + REAUTHENTICATION_TTL,
             )
             if elevated is None:
                 raise InvalidSessionError()
@@ -586,7 +668,11 @@ class AuthService:
                 session_id=principal.session_id,
                 resource_type="session",
                 resource_id=principal.session_id,
-                metadata={"recovery_code_used": used_recovery},
+                metadata={
+                    "recovery_code_used": used_recovery,
+                    "totp_policy_enabled": self._settings.totp_enabled,
+                    "authentication_factors": authentication_factors,
+                },
             )
             await unit_of_work.audit.append(event)
         emit_audit_event(event)
@@ -617,8 +703,12 @@ class AuthService:
                     ChallengePurpose.MFA_ENROLLMENT,
                     begin_enrollment=True,
                 )
-                if requires_mfa
-                else await self._issue(unit_of_work, user)
+                if requires_mfa and self._settings.totp_enabled
+                else await self._issue(
+                    unit_of_work,
+                    user,
+                    elevated=not self._settings.totp_enabled,
+                )
             )
             event = new_audit_event(
                 AuditAction.USER_ACTIVATED,
@@ -627,7 +717,12 @@ class AuthService:
                 actor_user_id=user.user_id,
                 resource_type="user",
                 resource_id=user.user_id,
-                metadata={"role": user.role.value, "mfa_required": requires_mfa},
+                metadata={
+                    "role": user.role.value,
+                    "mfa_required": requires_mfa and self._settings.totp_enabled,
+                    "mfa_enrollment_required": requires_mfa,
+                    "totp_policy_enabled": self._settings.totp_enabled,
+                },
             )
             await unit_of_work.audit.append(event)
         emit_audit_event(event)
@@ -820,6 +915,7 @@ class AuthService:
             factor = await unit_of_work.auth.get_mfa_factor(actor.user_id)
             count = await unit_of_work.auth.count_unused_recovery_codes(actor.user_id)
         return SecurityStatus(
+            totp_policy_enabled=self._settings.totp_enabled,
             mfa_enabled=factor is not None and factor.confirmed_at is not None,
             mfa_enrollment_required=actor.mfa_enrollment_required,
             unused_recovery_codes=count,
@@ -829,6 +925,7 @@ class AuthService:
     async def regenerate_recovery_codes(
         self, actor: SessionPrincipal
     ) -> tuple[str, ...]:
+        self._require_totp_enabled()
         require_recent_reauthentication(actor)
         now = utc_now()
         codes = generate_recovery_codes()
@@ -872,7 +969,11 @@ class AuthService:
             if user is None or user.identity.user_id != actor.user_id or not verification.valid:
                 raise InvalidCredentialsError()
             factor = await unit_of_work.auth.get_mfa_factor(actor.user_id)
-            if factor is not None and factor.confirmed_at is not None:
+            if (
+                self._settings.totp_enabled
+                and factor is not None
+                and factor.confirmed_at is not None
+            ):
                 if mfa_value is None:
                     raise InvalidMfaCodeError()
                 verified, _ = await self._verify_mfa_value(
@@ -992,10 +1093,19 @@ class AuthService:
             )
             if principal is None:
                 raise InvalidSessionError()
-            if principal.role in MFA_REQUIRED_ROLES and (
-                not principal.mfa_enabled or principal.mfa_enrollment_required
-            ):
-                raise InvalidSessionError()
+            if self._settings.totp_enabled:
+                required_without_factor = (
+                    principal.role in MFA_REQUIRED_ROLES and not principal.mfa_enabled
+                )
+                factor_not_verified_for_session = (
+                    principal.mfa_enabled and principal.mfa_verified_at is None
+                )
+                if (
+                    principal.mfa_enrollment_required
+                    or required_without_factor
+                    or factor_not_verified_for_session
+                ):
+                    raise InvalidSessionError()
             return principal
 
     async def logout(self, principal: SessionPrincipal) -> None:

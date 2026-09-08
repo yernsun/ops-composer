@@ -118,9 +118,15 @@ def test_rate_limited_event_suppresses_repeated_keys() -> None:
 
 
 def test_logging_level_and_audit_retention_settings_are_bounded() -> None:
-    settings = Settings()
+    settings = Settings(totp_enabled=True)
     assert settings.log_level.value == "INFO"
     assert settings.audit_retention_days == 180
+    assert settings.totp_enabled
+    assert Settings(_env_file=None).totp_enabled
+    disabled_auth = Settings(totp_enabled=False).safe_summary()["authentication"]
+    assert isinstance(disabled_auth, dict)
+    assert disabled_auth["totp_policy_enabled"] is False
+    assert disabled_auth["security_degraded"] is True
     assert Settings(log_level="DEBUG", audit_retention_days=1).log_level.value == "DEBUG"
     assert Settings(audit_retention_days=3650).audit_retention_days == 3650
     with pytest.raises(ValidationError):

@@ -38,11 +38,29 @@ from ops_composer.settings import Settings, get_settings
 from ops_composer.uow.factory import UnitOfWorkFactory
 from ops_composer.worker import run_worker
 
-app = typer.Typer(no_args_is_help=True, help="OpsComposer administration")
-migrate = typer.Typer(help="Manage immutable checksum migrations")
-configuration = typer.Typer(help="Inspect redacted runtime configuration")
-admin = typer.Typer(help="Bootstrap and recover administrator access")
-audit = typer.Typer(help="Query, export, and retain PostgreSQL business audit events")
+HELP_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+
+app = typer.Typer(
+    no_args_is_help=True,
+    help="OpsComposer administration",
+    context_settings=HELP_CONTEXT_SETTINGS,
+)
+migrate = typer.Typer(
+    help="Manage immutable checksum migrations",
+    context_settings=HELP_CONTEXT_SETTINGS,
+)
+configuration = typer.Typer(
+    help="Inspect redacted runtime configuration",
+    context_settings=HELP_CONTEXT_SETTINGS,
+)
+admin = typer.Typer(
+    help="Bootstrap and recover administrator access",
+    context_settings=HELP_CONTEXT_SETTINGS,
+)
+audit = typer.Typer(
+    help="Query, export, and retain PostgreSQL business audit events",
+    context_settings=HELP_CONTEXT_SETTINGS,
+)
 app.add_typer(migrate, name="migrate")
 app.add_typer(configuration, name="config")
 app.add_typer(admin, name="admin")
@@ -328,7 +346,8 @@ def admin_mfa_reset(
     normalized = username.strip().casefold()
     phrase = f"RESET MFA FOR {normalized}"
     typer.secho(
-        "Break-glass revokes every session and requires fresh TOTP enrollment.",
+        "Break-glass revokes every session and requires fresh TOTP enrollment "
+        "when the TOTP policy is enabled.",
         fg=typer.colors.YELLOW,
         err=True,
     )

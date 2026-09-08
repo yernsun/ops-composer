@@ -27,7 +27,13 @@ class SystemService:
         password_helper = shutil.which("sshpass") is not None
         session_helper = shutil.which("setsid") is not None
         return {
+            "status": "ok" if self._settings.totp_enabled else "degraded",
             "database": {"ok": database_ok},
+            "authentication": {
+                "totpPolicyEnabled": self._settings.totp_enabled,
+                "degraded": not self._settings.totp_enabled,
+                "issueCode": None if self._settings.totp_enabled else "totp_policy_disabled",
+            },
             "playbookWorkspace": {
                 "enabled": mount_enabled,
                 "checked": mount_enabled,

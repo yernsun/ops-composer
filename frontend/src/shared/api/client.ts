@@ -61,6 +61,10 @@ export interface SystemInfoDto {
   projectForgeTemplateDigest: string
   playbookWorkspace: string
   playbookSourceMode: string
+  authentication: {
+    totpPolicyEnabled: boolean
+    securityDegraded: boolean
+  }
   webShell: {
     enabled: boolean
     maxSessions: number

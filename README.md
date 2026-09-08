@@ -64,6 +64,14 @@ If the sole active OWNER loses the password, use
 phrase, reads the new password from a hidden prompt instead of argv, revokes every user session,
 and leaves MFA unchanged.
 
+TOTP is enabled by default. Set `OPS_COMPOSER_TOTP_ENABLED=false` only when password-only
+authentication is an accepted deployment tradeoff. In that mode OpsComposer does not generate or
+return TOTP seeds, does not request authenticator/recovery codes, and uses password-only
+reauthentication for the ten-minute sensitive-operation window. Existing encrypted factors and
+recovery codes are retained. Re-enabling TOTP rejects sessions that did not complete MFA and
+resumes confirmed factors. Production accepts the explicit override but startup logs, System, and
+Doctor report a security-degraded state.
+
 ## Playbook sources
 
 Set `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` to `database`, `mount`, or `both` (default). Database
@@ -124,6 +132,8 @@ docker compose run --rm api ops-composer audit export \
 docker compose run --rm api ops-composer audit purge             # dry run
 docker compose run --rm api ops-composer audit purge --execute   # use configured retention
 ```
+
+Every CLI level accepts both `-h` and `--help`.
 
 Exports are created with mode `0600` and refuse overwrite unless `--force` is explicit. Keep them
 outside the repository and shared directories.

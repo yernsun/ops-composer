@@ -173,6 +173,9 @@ function formatDate(value: string | null): string {
     <PageHeader :title="t('users.title')" :description="t('users.description')">
       <Button v-if="can('user:manage')" icon="pi pi-user-plus" :label="t('users.add')" @click="sensitive(openCreate)" />
     </PageHeader>
+    <Message v-if="session && !session.totpPolicyEnabled" severity="warn" :closable="false" role="status">
+      {{ t('users.totpPolicyDisabled') }}
+    </Message>
     <Message v-if="!can('user:read')" severity="error" :closable="false">{{ t('auth.errors.permission_denied') }}</Message>
     <Message v-if="error" severity="error" closable @close="error = ''">{{ error }}</Message>
     <section v-if="can('user:read')" class="surface-card">
@@ -182,7 +185,7 @@ function formatDate(value: string | null): string {
         </Column>
         <Column field="role" :header="t('users.role')" sortable><template #body="{ data }"><Tag :value="t(`roles.${data.role}`)" severity="info" /></template></Column>
         <Column field="status" :header="t('common.status')" sortable><template #body="{ data }"><Tag :value="t(`status.${data.status}`)" :severity="data.status === 'ACTIVE' ? 'success' : data.status === 'DISABLED' ? 'danger' : 'warn'" /></template></Column>
-        <Column field="mfaEnrollmentRequired" :header="t('security.mfa')"><template #body="{ data }">{{ data.mfaEnrollmentRequired ? t('users.enrollmentRequired') : t('users.enrollmentComplete') }}</template></Column>
+        <Column field="mfaEnrollmentRequired" :header="t('security.mfa')"><template #body="{ data }">{{ session?.totpPolicyEnabled ? (data.mfaEnrollmentRequired ? t('users.enrollmentRequired') : t('users.enrollmentComplete')) : (data.mfaEnrollmentRequired ? t('users.requiredWhenEnabled') : t('security.policyDisabled')) }}</template></Column>
         <Column field="updatedAt" :header="t('playbooks.updatedAt')" sortable><template #body="{ data }">{{ formatDate(data.updatedAt) }}</template></Column>
         <Column v-if="can('user:manage')" :header="t('common.actions')">
           <template #body="{ data }">

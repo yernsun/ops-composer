@@ -113,6 +113,7 @@ def test_settings_only_expose_postgresql_and_local_runtime_capabilities() -> Non
     assert "web_shell_max_sessions" in fields
     assert "web_shell_idle_timeout_seconds" in fields
     assert "web_shell_max_duration_seconds" in fields
+    assert "totp_enabled" in fields
     assert "redis_url" not in fields
     assert "sqlite_path" not in fields
     assert "broker_url" not in fields
@@ -132,6 +133,18 @@ def test_operator_cli_exposes_bootstrap_worker_and_configuration() -> None:
     assert "worker" in output
     assert "migrate" in output
     assert "purge-expired-auth" in output
+
+    for arguments in (
+        ["-h"],
+        ["admin", "-h"],
+        ["audit", "-h"],
+        ["migrate", "-h"],
+        ["config", "-h"],
+        ["admin", "password-reset", "-h"],
+    ):
+        alias_result = command.invoke(cli_app, arguments)
+        assert alias_result.exit_code == 0
+        assert "Usage:" in unstyle(alias_result.stdout)
 
     bootstrap = command.invoke(cli_app, ["admin", "bootstrap", "--help"])
     assert bootstrap.exit_code == 0

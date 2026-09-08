@@ -77,6 +77,12 @@ class InvalidMfaCodeError(AuthError):
     public_message = "multi-factor authentication failed"
 
 
+class TotpDisabledError(AuthError):
+    code = "totp_disabled"
+    status_code = 409
+    public_message = "TOTP authentication is disabled by deployment policy"
+
+
 class InvalidChallengeError(AuthError):
     code = "invalid_auth_challenge"
     public_message = "authentication challenge is invalid or expired"

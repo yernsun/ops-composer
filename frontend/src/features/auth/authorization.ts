@@ -20,9 +20,10 @@ export function useAuthorization() {
   })
   const session = computed(() => sessionQuery.data.value ?? null)
   const can = (permission: PermissionDto) => hasPermission(session.value, permission)
+  const totpPolicyEnabled = computed(() => session.value?.totpPolicyEnabled ?? true)
   const elevated = computed(() => {
     const value = session.value?.elevatedUntil
     return value !== null && value !== undefined && new Date(value).getTime() > Date.now()
   })
-  return { session, sessionQuery, can, elevated }
+  return { session, sessionQuery, can, elevated, totpPolicyEnabled }
 }

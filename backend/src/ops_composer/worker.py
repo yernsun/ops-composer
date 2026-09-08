@@ -831,6 +831,19 @@ async def run_worker(settings: Settings) -> None:
         message="worker process is starting",
         worker_id=worker_id,
     )
+    if not settings.totp_enabled:
+        log_event(
+            AuditAction.WORKER_STARTED,
+            AuditOutcome.STARTED,
+            source=AuditSource.WORKER,
+            severity=AuditSeverity.WARNING,
+            message="TOTP authentication is disabled by deployment policy",
+            worker_id=worker_id,
+            error_code="totp_policy_disabled",
+            failure_stage="authentication_policy",
+            retryable=False,
+            metadata={"security_degraded": True},
+        )
     pool = create_pool(settings.database_url)
     try:
         await pool.open()

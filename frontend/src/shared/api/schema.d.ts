@@ -2086,11 +2086,8 @@ export interface components {
         };
         /** ReauthenticateRequest */
         ReauthenticateRequest: {
-            /**
-             * Mfavalue
-             * Format: password
-             */
-            mfaValue: string;
+            /** Mfavalue */
+            mfaValue?: string | null;
             /**
              * Password
              * Format: password
@@ -2321,6 +2318,8 @@ export interface components {
             mfaEnabled: boolean;
             /** Mfaenrollmentrequired */
             mfaEnrollmentRequired: boolean;
+            /** Totppolicyenabled */
+            totpPolicyEnabled: boolean;
             /** Unusedrecoverycodes */
             unusedRecoveryCodes: number;
         };
@@ -2349,6 +2348,8 @@ export interface components {
             /** Permissions */
             permissions: components["schemas"]["Permission"][];
             role: components["schemas"]["UserRole"];
+            /** Totppolicyenabled */
+            totpPolicyEnabled: boolean;
             /**
              * Userid
              * Format: uuid

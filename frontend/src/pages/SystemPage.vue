@@ -63,6 +63,9 @@ function continueRotation(): void {
     <PageHeader :title="t('system.title')" :description="t('system.description')">
       <Button icon="pi pi-refresh" :label="t('common.refresh')" severity="secondary" outlined @click="doctorQuery.refetch()" />
     </PageHeader>
+    <Message v-if="infoQuery.data.value?.authentication.securityDegraded" severity="warn" :closable="false" role="status">
+      {{ t('system.totpPolicyDisabled') }}
+    </Message>
     <div class="system-grid">
       <Card>
         <template #title>{{ t('system.runtime') }}</template>
@@ -72,6 +75,7 @@ function continueRotation(): void {
             <div><dt>{{ t('system.version') }}</dt><dd>{{ infoQuery.data.value.version }}</dd></div>
             <div><dt>{{ t('system.database') }}</dt><dd>{{ infoQuery.data.value.database }}</dd></div>
             <div><dt>{{ t('system.queue') }}</dt><dd>{{ infoQuery.data.value.queue }}</dd></div>
+            <div><dt>{{ t('system.totpPolicy') }}</dt><dd><Tag :severity="infoQuery.data.value.authentication.totpPolicyEnabled ? 'success' : 'warn'" :value="infoQuery.data.value.authentication.totpPolicyEnabled ? t('system.enabled') : t('system.disabled')" /></dd></div>
             <div><dt>{{ t('system.playbookSourceMode') }}</dt><dd><code>{{ infoQuery.data.value.playbookSourceMode }}</code></dd></div>
             <div><dt>{{ t('system.workspace') }}</dt><dd><code>{{ infoQuery.data.value.playbookWorkspace }}</code></dd></div>
             <div><dt>{{ t('system.webShellCapacity') }}</dt><dd>{{ infoQuery.data.value.webShell.maxSessions }}</dd></div>

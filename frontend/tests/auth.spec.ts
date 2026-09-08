@@ -272,6 +272,7 @@ describe('session API client', () => {
         'run:standard', 'run:shell', 'run:cancel', 'web-shell:open',
         'audit:read', 'user:read', 'user:manage', 'key:rotate',
       ],
+      totpPolicyEnabled: true,
       mfaEnabled: true,
       mfaEnrollmentRequired: false,
       mfaVerifiedAt: '2026-01-01T00:00:00Z',
@@ -294,6 +295,7 @@ describe('session API client', () => {
     'origin_not_allowed',
     'csrf_failed',
     'auth_rate_limited',
+    'totp_disabled',
     'request_validation_failed',
   ])('maps the stable %s error code to a locale key', (code) => {
     const error = new ApiRequestError(401, code, 'safe message', null, null, null)

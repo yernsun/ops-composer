@@ -32,6 +32,9 @@ const pendingSensitiveAction = ref<null | (() => void)>(null)
 const passwordVisible = ref(false)
 const passwordForm = reactive({ currentPassword: '', newPassword: '', confirmPassword: '', mfaValue: '' })
 const error = ref('')
+const totpPolicyEnabled = computed(
+  () => securityQuery.data.value?.totpPolicyEnabled ?? session.value?.totpPolicyEnabled ?? true,
+)
 
 const elevatedText = computed(() => {
   const value = securityQuery.data.value?.elevatedUntil
@@ -132,6 +135,9 @@ function closeRecovery(): void {
 <template>
   <div class="page-stack">
     <PageHeader :title="t('security.title')" :description="t('security.description')" />
+    <Message v-if="!totpPolicyEnabled" severity="warn" :closable="false" role="status">
+      {{ t('security.totpPolicyDisabled') }}
+    </Message>
     <Message v-if="error" severity="error" closable @close="error = ''">{{ error }}</Message>
 
     <div class="system-grid">
@@ -141,8 +147,8 @@ function closeRecovery(): void {
           <dl class="definition-list">
             <div><dt>{{ t('auth.username') }}</dt><dd>{{ session?.username }}</dd></div>
             <div><dt>{{ t('users.role') }}</dt><dd><Tag :value="t(`roles.${session?.role}`)" /></dd></div>
-            <div><dt>{{ t('security.mfa') }}</dt><dd><Tag :severity="securityQuery.data.value?.mfaEnabled ? 'success' : 'warn'" :value="securityQuery.data.value?.mfaEnabled ? t('security.enabled') : t('security.disabled')" /></dd></div>
-            <div><dt>{{ t('security.recoveryRemaining') }}</dt><dd>{{ securityQuery.data.value?.unusedRecoveryCodes ?? '—' }}</dd></div>
+            <div><dt>{{ t('security.mfa') }}</dt><dd><Tag :severity="!totpPolicyEnabled ? 'warn' : securityQuery.data.value?.mfaEnabled ? 'success' : 'warn'" :value="!totpPolicyEnabled ? (securityQuery.data.value?.mfaEnabled ? t('security.retained') : t('security.policyDisabled')) : securityQuery.data.value?.mfaEnabled ? t('security.enabled') : t('security.disabled')" /></dd></div>
+            <div v-if="totpPolicyEnabled"><dt>{{ t('security.recoveryRemaining') }}</dt><dd>{{ securityQuery.data.value?.unusedRecoveryCodes ?? '—' }}</dd></div>
             <div><dt>{{ t('security.elevation') }}</dt><dd>{{ elevatedText }}</dd></div>
           </dl>
         </template>
@@ -151,8 +157,8 @@ function closeRecovery(): void {
         <template #title>{{ t('security.actions') }}</template>
         <template #content>
           <div class="button-stack">
-            <Button v-if="!securityQuery.data.value?.mfaEnabled" icon="pi pi-mobile" :label="t('security.enableMfa')" @click="beginEnrollmentMutation.mutate()" />
-            <Button v-else icon="pi pi-refresh" severity="secondary" outlined :label="t('security.regenerateRecovery')" @click="requireElevation(() => regenerateMutation.mutate())" />
+            <Button v-if="totpPolicyEnabled && !securityQuery.data.value?.mfaEnabled" icon="pi pi-mobile" :label="t('security.enableMfa')" @click="beginEnrollmentMutation.mutate()" />
+            <Button v-else-if="totpPolicyEnabled" icon="pi pi-refresh" severity="secondary" outlined :label="t('security.regenerateRecovery')" @click="requireElevation(() => regenerateMutation.mutate())" />
             <Button icon="pi pi-key" severity="secondary" outlined :label="t('security.changePassword')" @click="passwordVisible = true" />
             <Button icon="pi pi-shield" severity="secondary" outlined :label="t('auth.reauthenticate')" @click="reauthVisible = true" />
           </div>
@@ -189,7 +195,7 @@ function closeRecovery(): void {
           <div class="field"><label for="current-password">{{ t('security.currentPassword') }}</label><Password id="current-password" v-model="passwordForm.currentPassword" :feedback="false" toggle-mask autocomplete="current-password" required /></div>
           <div class="field"><label for="new-password">{{ t('auth.newPassword') }}</label><Password id="new-password" v-model="passwordForm.newPassword" toggle-mask autocomplete="new-password" required /></div>
           <div class="field"><label for="confirm-password">{{ t('security.confirmPassword') }}</label><Password id="confirm-password" v-model="passwordForm.confirmPassword" :feedback="false" toggle-mask autocomplete="new-password" required /></div>
-          <div v-if="securityQuery.data.value?.mfaEnabled" class="field"><label for="password-mfa">{{ t('auth.mfaValue') }}</label><Password id="password-mfa" v-model="passwordForm.mfaValue" :feedback="false" toggle-mask autocomplete="one-time-code" /></div>
+          <div v-if="totpPolicyEnabled && securityQuery.data.value?.mfaEnabled" class="field"><label for="password-mfa">{{ t('auth.mfaValue') }}</label><Password id="password-mfa" v-model="passwordForm.mfaValue" :feedback="false" toggle-mask autocomplete="one-time-code" /></div>
           <Message v-if="error" severity="error" :closable="false">{{ error }}</Message>
         </form>
       </Fluid>

@@ -19,6 +19,7 @@ x-application: &application
     APP_SESSION_COOKIE_SECURE: ${APP_SESSION_COOKIE_SECURE:-true}
     APP_AUTH_RATE_LIMIT_SECRET: ${APP_AUTH_RATE_LIMIT_SECRET:?set at least 32 random bytes}
     FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?set the trusted proxy IP or CIDR}
+    OPS_COMPOSER_TOTP_ENABLED: ${OPS_COMPOSER_TOTP_ENABLED:-true}
     # Configure either the legacy single key or a keyring file, never both.
     OPS_COMPOSER_MASTER_KEY: ${OPS_COMPOSER_MASTER_KEY:-}
     OPS_COMPOSER_MASTER_KEY_VERSION: ${OPS_COMPOSER_MASTER_KEY_VERSION:-1}

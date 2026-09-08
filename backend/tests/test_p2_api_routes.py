@@ -63,6 +63,7 @@ def _principal(role: UserRole = UserRole.OWNER) -> SessionPrincipal:
         permissions=permissions_for_role(role),
         mfa_enabled=True,
         mfa_verified_at=now,
+        reauthenticated_at=now,
         elevated_until=now + timedelta(minutes=10),
         csrf_hash="c" * 64,
         expires_at=now + timedelta(hours=1),
@@ -110,7 +111,10 @@ def _identity(principal: SessionPrincipal) -> UserIdentity:
 async def test_p2_auth_routes_cover_challenges_security_and_user_governance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = Settings(allowed_origins_csv="https://ops.example.test")
+    settings = Settings(
+        allowed_origins_csv="https://ops.example.test",
+        totp_enabled=True,
+    )
     monkeypatch.setattr(auth_api, "get_settings", lambda: settings)
     principal = _principal()
     identity = _identity(principal)
@@ -141,7 +145,7 @@ async def test_p2_auth_routes_cover_challenges_security_and_user_governance(
         begin_mfa_enrollment=AsyncMock(return_value=challenge),
         reauthenticate=AsyncMock(return_value=principal),
         security_status=AsyncMock(
-            return_value=SecurityStatus(True, False, 9, principal.elevated_until)
+            return_value=SecurityStatus(True, True, False, 9, principal.elevated_until)
         ),
         regenerate_recovery_codes=AsyncMock(return_value=("code-one", "code-two")),
         change_password=AsyncMock(),
@@ -213,8 +217,10 @@ async def test_p2_auth_routes_cover_challenges_security_and_user_governance(
         principal,
     )
     assert elevated.elevated_until == principal.elevated_until
+    assert elevated.totp_policy_enabled
     assert (await auth_api.session(principal)).permissions
     security = await auth_api.security_status(factory, principal)
+    assert security.totp_policy_enabled
     assert security.unused_recovery_codes == 9
     codes_response = Response()
     codes = await auth_api.regenerate_recovery_codes(codes_response, factory, principal)

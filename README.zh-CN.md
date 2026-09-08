@@ -68,6 +68,12 @@ OWNER 丢失全部因子时，可在服务端使用带确认短语并完整审�
 该 break-glass 命令要求精确确认短语并隐藏输入新密码，成功后撤销该用户的全部 Session，且不会
 重置 MFA。密码和确认内容都不会通过命令行参数传入。
 
+TOTP 默认启用。仅在明确接受密码单因素风险时设置
+`OPS_COMPOSER_TOTP_ENABLED=false`。此模式不会生成或返回 TOTP Seed，不要求验证码或恢复码，
+敏感操作的 10 分钟授权仅校验密码。已有加密因子与恢复码会保留；重新启用后，未在当前 Session
+完成 MFA 的会话会失效，已确认因子恢复使用。production 允许显式关闭，但启动日志、系统页面和
+Doctor 会持续标记安全降级。
+
 ## 业务日志与审计
 
 API、Worker、CLI、Migration 和 Uvicorn 均向 stdout 输出单行 JSON；Compose 使用 Docker
@@ -88,6 +94,8 @@ docker compose run --rm api ops-composer audit export \
 docker compose run --rm api ops-composer audit purge             # dry-run
 docker compose run --rm api ops-composer audit purge --execute   # 按保留期清理
 ```
+
+所有 CLI 层级均同时支持 `-h` 与 `--help`。
 
 导出文件权限固定为 `0600`，默认拒绝覆盖；需要覆盖时显式传入 `--force`。请将导出文件放在
 仓库和共享目录之外。

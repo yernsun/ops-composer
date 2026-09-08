@@ -95,6 +95,7 @@ class SessionPrincipal(StrictDomainModel):
     mfa_enabled: bool = False
     mfa_enrollment_required: bool = False
     mfa_verified_at: datetime | None = None
+    reauthenticated_at: datetime | None = None
     elevated_until: datetime | None = None
     csrf_hash: str = Field(repr=False)
     expires_at: datetime

@@ -67,6 +67,7 @@ test('database and mounted Playbooks render and a database Playbook can be valid
             'user:manage',
             'key:rotate',
           ],
+          totpPolicyEnabled: true,
           mfaEnabled: true,
           mfaEnrollmentRequired: false,
           mfaVerifiedAt: timestamp,

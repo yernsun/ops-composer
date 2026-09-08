@@ -24,6 +24,7 @@ from ops_composer.auth.errors import (
     AuthRateLimitedError,
     CsrfValidationError,
     OriginNotAllowedError,
+    ReauthenticationRequiredError,
 )
 from ops_composer.auth.models import IssuedSession, SessionPrincipal
 from ops_composer.auth.security import (
@@ -34,7 +35,13 @@ from ops_composer.auth.security import (
     token_matches,
     verify_password,
 )
-from ops_composer.auth.service import AuthService, RateLimitSpec, canonical_username, fixed_window
+from ops_composer.auth.service import (
+    AuthService,
+    RateLimitSpec,
+    canonical_username,
+    fixed_window,
+    require_recent_reauthentication,
+)
 from ops_composer.domain.base import utc_now
 from ops_composer.main import app as fastapi_app
 from ops_composer.settings import (
@@ -165,6 +172,23 @@ def test_production_uses_host_only_secure_session_cookies() -> None:
         assert "Domain=" not in value
     assert "HttpOnly" in session_cookie
     assert "HttpOnly" not in csrf_cookie
+
+
+def test_production_can_explicitly_disable_totp_and_reauthentication_uses_its_own_time() -> None:
+    assert not _production_settings(totp_enabled=False).totp_enabled
+
+    now = utc_now()
+    principal = SessionPrincipal(
+        session_id=uuid4(),
+        user_id=uuid4(),
+        username="owner",
+        csrf_hash="c" * 64,
+        elevated_until=now + timedelta(minutes=10),
+        expires_at=now + timedelta(hours=1),
+    )
+    with pytest.raises(ReauthenticationRequiredError):
+        require_recent_reauthentication(principal)
+    require_recent_reauthentication(principal.model_copy(update={"reauthenticated_at": now}))
 
 
 def _dependency_names(route: APIRoute) -> set[str]:

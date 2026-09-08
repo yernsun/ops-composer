@@ -2471,6 +2471,7 @@ services:
     command: ["ops-composer", "migrate", "up"]
     environment: &app-env
       DATABASE_URL: postgresql://ops_composer:${POSTGRES_PASSWORD}@db:5432/ops_composer
+      OPS_COMPOSER_TOTP_ENABLED: ${OPS_COMPOSER_TOTP_ENABLED:-true}
       OPS_COMPOSER_MASTER_KEY: ${OPS_COMPOSER_MASTER_KEY}
       OPS_COMPOSER_PLAYBOOK_WORKSPACE: /workspace
       OPS_COMPOSER_PLAYBOOK_SOURCE_MODE: both
@@ -2923,6 +2924,12 @@ OWNER/ADMIN 强制使用 RFC 6238 TOTP（SHA-1、6 位、30 秒、±1 时间窗�
 Seed 使用 Master Keyring 加密；最后接受时间步原子更新以阻止重放。每次注册生成 10 个高熵、
 仅展示一次且逐个哈希保存的恢复码。角色、状态、密码或 MFA 变化立即撤销该用户 Session。
 
+部署级 `OPS_COMPOSER_TOTP_ENABLED` 默认为 `true`。显式设为 `false` 时，全局切换为密码登录与
+密码再认证，不生成或返回 Seed，MFA enrollment/verify/recovery 接口返回 `totp_disabled`。
+现有加密因子与恢复码保留；重新开启后，未在当前 Session 完成 MFA 的会话立即失效。Session 的
+`reauthenticated_at` 与 `mfa_verified_at` 分离，前者证明 10 分钟敏感操作授权，后者只证明本次
+会话实际通过 MFA。production 允许关闭，但启动日志、System 和 Doctor 必须标记安全降级。
+
 `Permission` 是唯一权限来源，API dependency 和 Service 都必须校验；前端只据此隐藏不可用操作。
 权限矩阵如下：
 
@@ -3010,13 +3017,14 @@ Migration 顺序固定为：
 0070_multi_admin_governance
 0080_credential_keyring
 0090_playbook_projects
+0100_totp_policy
 ```
 
 新增 API 覆盖激活、MFA enrollment/challenge/recovery、再认证、个人安全、用户治理、Credential
 判别联合与 revision 元数据、Keyring 用量/轮换、Playbook project/revision/diff/restore/ZIP、Run
 Preview，以及只读审计分页/JSONL 导出。激活码、Seed、恢复码、Playbook 内容和导出响应使用
 `Cache-Control: no-store`。稳定错误包括 `permission_denied`、`reauthentication_required`、
-`mfa_required`、`activation_expired`、`last_owner_required`、`key_version_missing`、
+`mfa_required`、`totp_disabled`、`activation_expired`、`last_owner_required`、`key_version_missing`、
 `key_rotation_in_progress`、`playbook_project_invalid`、`secret_parameters_required` 和
 `version_conflict`。
 
@@ -3039,6 +3047,7 @@ INV-29 敏感参数不得进入 operation_spec、API、日志、审计、RunEven
 INV-30 敏感参数 DELETE RETURNING 消费后无法恢复时，Run 只能 INTERRUPTED。
 INV-31 ZIP 导入不得调用 extractall，且必须以实际解压字节实施限制。
 INV-32 Shell/Web Shell 仅 OWNER/ADMIN 可用；AUDITOR 不得执行写操作。
+INV-33 TOTP 重新启用后，不得接受缺少本 Session MFA 验证时间的已绑定/强制 MFA 会话。
 ```
 
 P2 仍明确不实现审批流、资源级 ACL、邮件、SSO、外部秘密管理、自定义角色、会话录像、二进制

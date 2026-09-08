@@ -87,6 +87,10 @@ class Settings(BaseSettings):
         le=86400,
         validation_alias="APP_AUTH_LOGIN_IP_WINDOW_SECONDS",
     )
+    totp_enabled: bool = Field(
+        default=True,
+        validation_alias="OPS_COMPOSER_TOTP_ENABLED",
+    )
     master_key: SecretStr = Field(
         default=SecretStr(DEVELOPMENT_MASTER_KEY), validation_alias="OPS_COMPOSER_MASTER_KEY"
     )
@@ -297,6 +301,8 @@ class Settings(BaseSettings):
             },
             "authentication": {
                 "mode": "multi-administrator-rbac",
+                "totp_policy_enabled": self.totp_enabled,
+                "security_degraded": not self.totp_enabled,
                 "allowed_origins": sorted(self.allowed_origins),
                 "cookies_secure": self.cookies_secure,
                 "session_ttl_seconds": self.session_ttl_seconds,

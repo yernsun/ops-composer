@@ -19,6 +19,13 @@ or MFA revoke the affected sessions. User governance, credential writes, and key
 password plus MFA/recovery-code reauthentication no more than ten minutes old. A guarded, audited
 CLI MFA reset is the break-glass route for the sole owner.
 
+`OPS_COMPOSER_TOTP_ENABLED` defaults to `true`. When explicitly disabled, password login and
+password-only reauthentication issue sessions without `mfa_verified_at`; `reauthenticated_at`
+independently proves the ten-minute sensitive-operation check. Enrollment, verification, and
+recovery-code issuance fail with `totp_disabled`, and no seed is generated or returned. Stored
+factors remain encrypted. When the setting is re-enabled, a session with an enrolled factor but no
+session-local MFA timestamp is rejected, as is an OWNER/ADMIN still requiring enrollment.
+
 Every API dependency and every corresponding business Service enforces the same `Permission`
 enum. Frontend visibility is usability only and is never an authorization boundary. Authorization
 denials are persisted best-effort without disclosing submitted identity, session, MFA, or secret

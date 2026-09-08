@@ -78,6 +78,10 @@ async def system_info(_: CurrentSessionDep) -> dict[str, object]:
         "projectForgeTemplateDigest": PROJECT_FORGE_TEMPLATE_DIGEST,
         "playbookWorkspace": str(settings.playbook_workspace),
         "playbookSourceMode": settings.playbook_source_mode.value,
+        "authentication": {
+            "totpPolicyEnabled": settings.totp_enabled,
+            "securityDegraded": not settings.totp_enabled,
+        },
         "webShell": {
             "enabled": True,
             "maxSessions": settings.web_shell_max_sessions,

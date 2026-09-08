@@ -8,6 +8,7 @@ from ops_composer.db.migrations.keyring import KEYRING
 from ops_composer.db.migrations.ops_composer import OPS_COMPOSER
 from ops_composer.db.migrations.playbook_projects import PLAYBOOK_PROJECTS
 from ops_composer.db.migrations.playbooks import PLAYBOOKS
+from ops_composer.db.migrations.totp_policy import TOTP_POLICY
 from ops_composer.db.migrations.web_shell import WEB_SHELL
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -21,4 +22,5 @@ MIGRATIONS: tuple[Migration, ...] = (
     GOVERNANCE,
     KEYRING,
     PLAYBOOK_PROJECTS,
+    TOTP_POLICY,
 )

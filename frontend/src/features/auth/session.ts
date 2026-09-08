@@ -22,6 +22,7 @@ const stableAuthErrorCodes = new Set([
   'origin_not_allowed',
   'csrf_failed',
   'auth_rate_limited',
+  'totp_disabled',
   'request_validation_failed',
 ])
 

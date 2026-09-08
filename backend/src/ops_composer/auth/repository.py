@@ -104,6 +104,7 @@ class AuthRepository(BaseRepository, Protocol):
         expires_at: datetime,
         created_at: datetime,
         mfa_verified_at: datetime | None = None,
+        reauthenticated_at: datetime | None = None,
         elevated_until: datetime | None = None,
     ) -> None: ...
 
@@ -114,7 +115,11 @@ class AuthRepository(BaseRepository, Protocol):
     async def delete_user_sessions(self, user_id: UUID) -> int: ...
 
     async def elevate_session(
-        self, session_id: UUID, elevated_until: datetime
+        self,
+        session_id: UUID,
+        *,
+        reauthenticated_at: datetime,
+        elevated_until: datetime,
     ) -> SessionPrincipal | None: ...
 
     async def add_challenge(
@@ -426,15 +431,17 @@ class PostgresAuthRepository(BaseRepository):
         expires_at: datetime,
         created_at: datetime,
         mfa_verified_at: datetime | None = None,
+        reauthenticated_at: datetime | None = None,
         elevated_until: datetime | None = None,
     ) -> None:
         await self.connection.execute(
             sql.SQL(
                 "INSERT INTO sessions (session_id, user_id, token_hash, csrf_hash, "
-                "expires_at, created_at, mfa_verified_at, elevated_until) VALUES ("
+                "expires_at, created_at, mfa_verified_at, reauthenticated_at, "
+                "elevated_until) VALUES ("
                 "%(session_id)s, %(user_id)s, "
                 "%(token_hash)s, %(csrf_hash)s, %(expires_at)s, %(created_at)s, "
-                "%(mfa_verified_at)s, %(elevated_until)s)"
+                "%(mfa_verified_at)s, %(reauthenticated_at)s, %(elevated_until)s)"
             ),
             {
                 "session_id": session_id,
@@ -444,6 +451,7 @@ class PostgresAuthRepository(BaseRepository):
                 "expires_at": expires_at,
                 "created_at": created_at,
                 "mfa_verified_at": mfa_verified_at,
+                "reauthenticated_at": reauthenticated_at,
                 "elevated_until": elevated_until,
             },
             prepare=True,
@@ -454,7 +462,7 @@ class PostgresAuthRepository(BaseRepository):
             sql.SQL(
                 "SELECT s.session_id, s.user_id, u.username, u.role, "
                 "u.mfa_enrollment_required, s.csrf_hash, s.expires_at, "
-                "s.mfa_verified_at, s.elevated_until, "
+                "s.mfa_verified_at, s.reauthenticated_at, s.elevated_until, "
                 "EXISTS (SELECT 1 FROM user_mfa_factors f WHERE f.user_id = u.user_id "
                 "AND f.confirmed_at IS NOT NULL) AS mfa_enabled "
                 "FROM sessions s JOIN users u ON u.user_id = s.user_id "
@@ -484,21 +492,32 @@ class PostgresAuthRepository(BaseRepository):
         )
 
     async def elevate_session(
-        self, session_id: UUID, elevated_until: datetime
+        self,
+        session_id: UUID,
+        *,
+        reauthenticated_at: datetime,
+        elevated_until: datetime,
     ) -> SessionPrincipal | None:
         await self.connection.execute(
             sql.SQL(
-                "UPDATE sessions SET elevated_until = %(elevated_until)s "
+                "UPDATE sessions SET reauthenticated_at = %(reauthenticated_at)s, "
+                "elevated_until = %(elevated_until)s "
                 "WHERE session_id = %(session_id)s"
             ),
-            {"session_id": session_id, "elevated_until": elevated_until},
+            {
+                "session_id": session_id,
+                "reauthenticated_at": reauthenticated_at,
+                "elevated_until": elevated_until,
+            },
             prepare=True,
         )
         row = await self.connection.fetch_one(
             sql.SQL(
                 "SELECT s.session_id, s.user_id, u.username, u.role, "
                 "u.mfa_enrollment_required, s.csrf_hash, s.expires_at, "
-                "s.mfa_verified_at, s.elevated_until, TRUE AS mfa_enabled "
+                "s.mfa_verified_at, s.reauthenticated_at, s.elevated_until, "
+                "EXISTS (SELECT 1 FROM user_mfa_factors f WHERE f.user_id = u.user_id "
+                "AND f.confirmed_at IS NOT NULL) AS mfa_enabled "
                 "FROM sessions s JOIN users u ON u.user_id = s.user_id "
                 "WHERE s.session_id = %(session_id)s AND u.status = 'ACTIVE'"
             ),
