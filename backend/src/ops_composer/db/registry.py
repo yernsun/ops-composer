@@ -3,7 +3,10 @@ from ops_composer.db.migrations.audit import AUDIT
 from ops_composer.db.migrations.auth import AUTH
 from ops_composer.db.migrations.auth_security import AUTH_SECURITY
 from ops_composer.db.migrations.core import CORE
+from ops_composer.db.migrations.governance import GOVERNANCE
+from ops_composer.db.migrations.keyring import KEYRING
 from ops_composer.db.migrations.ops_composer import OPS_COMPOSER
+from ops_composer.db.migrations.playbook_projects import PLAYBOOK_PROJECTS
 from ops_composer.db.migrations.playbooks import PLAYBOOKS
 from ops_composer.db.migrations.web_shell import WEB_SHELL
 
@@ -15,4 +18,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     AUDIT,
     PLAYBOOKS,
     WEB_SHELL,
+    GOVERNANCE,
+    KEYRING,
+    PLAYBOOK_PROJECTS,
 )

@@ -67,6 +67,12 @@ def _auth_action(error: AuthError) -> AuditAction:
         "origin_not_allowed": AuditAction.ORIGIN_DENIED,
         "csrf_failed": AuditAction.CSRF_DENIED,
         "admin_already_exists": AuditAction.ADMIN_BOOTSTRAP_REJECTED,
+        "permission_denied": AuditAction.AUTH_PERMISSION_DENIED,
+        "reauthentication_required": AuditAction.AUTH_PERMISSION_DENIED,
+        "invalid_mfa_code": AuditAction.AUTH_MFA_FAILED,
+        "invalid_auth_challenge": AuditAction.AUTH_MFA_FAILED,
+        "activation_expired": AuditAction.REQUEST_REJECTED,
+        "last_owner_required": AuditAction.REQUEST_REJECTED,
     }.get(error.code, AuditAction.REQUEST_REJECTED)
 
 
@@ -79,6 +85,7 @@ def _ops_action(error: OpsError, path: str) -> AuditAction:
         "host_key_confirmation_required": AuditAction.RUN_TARGET_RESOLUTION_FAILED,
         "run_not_cancelable": AuditAction.RUN_CANCEL_REJECTED,
         "playbook_invalid": AuditAction.PLAYBOOK_VALIDATION_FAILED,
+        "playbook_project_invalid": AuditAction.PLAYBOOK_VALIDATION_FAILED,
         "playbook_source_disabled": AuditAction.PLAYBOOK_SOURCE_DISABLED,
     }.get(error.code, AuditAction.REQUEST_REJECTED)
 

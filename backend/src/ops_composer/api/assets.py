@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Header, Response, status
@@ -8,9 +9,18 @@ from pydantic import Field, SecretStr
 from ops_composer.api.dependencies import UnitOfWorkFactoryDep
 from ops_composer.api.models import StrictApiModel
 from ops_composer.auth.api import CurrentSessionDep, UnsafeSessionDep
-from ops_composer.domain.ops import Credential, Host, HostGroup, HostKey, TargetKind
+from ops_composer.auth.models import Permission
+from ops_composer.auth.service import require_permission, require_recent_reauthentication
+from ops_composer.domain.ops import (
+    Credential,
+    CredentialType,
+    Host,
+    HostGroup,
+    HostKey,
+    TargetKind,
+)
 from ops_composer.services.assets import AssetService, CredentialService
-from ops_composer.services.crypto import CredentialCipher
+from ops_composer.services.crypto import CredentialCipher, build_master_keyring
 from ops_composer.services.inventory import build_inventory, render_inventory
 from ops_composer.settings import get_settings
 
@@ -23,13 +33,19 @@ def _assets(factory: UnitOfWorkFactoryDep) -> AssetService:
 
 def _credentials(factory: UnitOfWorkFactoryDep) -> CredentialService:
     settings = get_settings()
+    keyring = build_master_keyring(
+        keyring_file=settings.master_keyring_file,
+        fallback_key=settings.master_key.get_secret_value(),
+        fallback_version=settings.master_key_version,
+    )
     return CredentialService(
         factory,
-        CredentialCipher(settings.master_key.get_secret_value(), settings.master_key_version),
+        CredentialCipher(keyring),
     )
 
 
 class CredentialCreateRequest(StrictApiModel):
+    credential_type: Literal[CredentialType.PASSWORD] = CredentialType.PASSWORD
     name: str = Field(min_length=1, max_length=128)
     username: str = Field(min_length=1, max_length=128)
     password: SecretStr = Field(min_length=1, max_length=4096, repr=False)
@@ -41,8 +57,58 @@ class CredentialCreateRequest(StrictApiModel):
 
 
 class CredentialRotateRequest(StrictApiModel):
+    credential_type: Literal[CredentialType.PASSWORD] = CredentialType.PASSWORD
     password: SecretStr = Field(min_length=1, max_length=4096, repr=False)
     become_password: SecretStr | None = Field(default=None, max_length=4096, repr=False)
+
+
+class SshPrivateKeyCredentialCreateRequest(StrictApiModel):
+    credential_type: Literal[CredentialType.SSH_PRIVATE_KEY]
+    name: str = Field(min_length=1, max_length=128)
+    username: str = Field(min_length=1, max_length=128)
+    private_key: SecretStr = Field(min_length=32, max_length=1024 * 1024, repr=False)
+    passphrase: SecretStr | None = Field(default=None, max_length=4096, repr=False)
+    become_password: SecretStr | None = Field(default=None, max_length=4096, repr=False)
+    become_enabled: bool = False
+    become_method: str = Field(default="sudo", max_length=32)
+    become_user: str = Field(default="root", max_length=128)
+    description: str = Field(default="", max_length=1024)
+
+
+CredentialCreate = Annotated[
+    CredentialCreateRequest | SshPrivateKeyCredentialCreateRequest,
+    Field(discriminator="credential_type"),
+]
+
+
+class SshPrivateKeyCredentialRotateRequest(StrictApiModel):
+    credential_type: Literal[CredentialType.SSH_PRIVATE_KEY]
+    private_key: SecretStr = Field(min_length=32, max_length=1024 * 1024, repr=False)
+    passphrase: SecretStr | None = Field(default=None, max_length=4096, repr=False)
+    become_password: SecretStr | None = Field(default=None, max_length=4096, repr=False)
+
+
+CredentialRotate = Annotated[
+    CredentialRotateRequest | SshPrivateKeyCredentialRotateRequest,
+    Field(discriminator="credential_type"),
+]
+
+
+class CredentialUpdateRequest(StrictApiModel):
+    name: str = Field(min_length=1, max_length=128)
+    username: str = Field(min_length=1, max_length=128)
+    description: str = Field(default="", max_length=1024)
+    enabled: bool
+    become_enabled: bool
+    become_method: str = Field(max_length=32)
+    become_user: str = Field(max_length=128)
+    lock_version: int = Field(ge=1)
+
+
+class CredentialRevisionResponse(StrictApiModel):
+    version: int
+    encryption_key_version: int
+    created_at: object
 
 
 class HostCreateRequest(StrictApiModel):
@@ -104,10 +170,33 @@ async def list_credentials(
     operation_id="createCredential",
 )
 async def create_credential(
-    request: CredentialCreateRequest,
+    request: CredentialCreate,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> Credential:
+    require_permission(principal, Permission.CREDENTIAL_WRITE)
+    require_recent_reauthentication(principal)
+    if isinstance(request, SshPrivateKeyCredentialCreateRequest):
+        return await _credentials(factory).create_ssh_private_key(
+            name=request.name,
+            username=request.username,
+            private_key=request.private_key.get_secret_value(),
+            passphrase=(
+                request.passphrase.get_secret_value() if request.passphrase is not None else None
+            ),
+            become_password=(
+                request.become_password.get_secret_value()
+                if request.become_password is not None
+                else None
+            ),
+            become_enabled=request.become_enabled,
+            become_method=request.become_method,
+            become_user=request.become_user,
+            description=request.description,
+            actor_user_id=principal.user_id,
+            session_id=principal.session_id,
+            actor=principal,
+        )
     return await _credentials(factory).create(
         name=request.name,
         username=request.username,
@@ -121,6 +210,9 @@ async def create_credential(
         become_method=request.become_method,
         become_user=request.become_user,
         description=request.description,
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
     )
 
 
@@ -139,10 +231,28 @@ async def get_credential(
 )
 async def rotate_credential(
     credential_id: UUID,
-    request: CredentialRotateRequest,
+    request: CredentialRotate,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> Credential:
+    require_permission(principal, Permission.CREDENTIAL_WRITE)
+    require_recent_reauthentication(principal)
+    if isinstance(request, SshPrivateKeyCredentialRotateRequest):
+        return await _credentials(factory).rotate_ssh_private_key(
+            credential_id,
+            private_key=request.private_key.get_secret_value(),
+            passphrase=(
+                request.passphrase.get_secret_value() if request.passphrase is not None else None
+            ),
+            become_password=(
+                request.become_password.get_secret_value()
+                if request.become_password is not None
+                else None
+            ),
+            actor_user_id=principal.user_id,
+            session_id=principal.session_id,
+            actor=principal,
+        )
     return await _credentials(factory).rotate(
         credential_id,
         password=request.password.get_secret_value(),
@@ -151,6 +261,51 @@ async def rotate_credential(
             if request.become_password is not None
             else None
         ),
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
+
+
+@router.put("/credentials/{credential_id}", operation_id="updateCredential")
+async def update_credential(
+    credential_id: UUID,
+    request: CredentialUpdateRequest,
+    factory: UnitOfWorkFactoryDep,
+    principal: UnsafeSessionDep,
+) -> Credential:
+    require_permission(principal, Permission.CREDENTIAL_WRITE)
+    require_recent_reauthentication(principal)
+    return await _credentials(factory).update(
+        credential_id,
+        name=request.name,
+        username=request.username,
+        description=request.description,
+        enabled=request.enabled,
+        become_enabled=request.become_enabled,
+        become_method=request.become_method,
+        become_user=request.become_user,
+        expected_lock_version=request.lock_version,
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
+
+
+@router.get("/credentials/{credential_id}/revisions", operation_id="listCredentialRevisions")
+async def list_credential_revisions(
+    credential_id: UUID,
+    factory: UnitOfWorkFactoryDep,
+    _: CurrentSessionDep,
+) -> tuple[CredentialRevisionResponse, ...]:
+    revisions = await _credentials(factory).list_revisions(credential_id)
+    return tuple(
+        CredentialRevisionResponse(
+            version=revision.version,
+            encryption_key_version=revision.encryption_key_version,
+            created_at=revision.created_at,
+        )
+        for revision in revisions
     )
 
 
@@ -162,9 +317,16 @@ async def rotate_credential(
 async def delete_credential(
     credential_id: UUID,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> Response:
-    await _credentials(factory).delete(credential_id)
+    require_permission(principal, Permission.CREDENTIAL_WRITE)
+    require_recent_reauthentication(principal)
+    await _credentials(factory).delete(
+        credential_id,
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -177,9 +339,15 @@ async def list_hosts(factory: UnitOfWorkFactoryDep, _: CurrentSessionDep) -> tup
 async def create_host(
     request: HostCreateRequest,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> Host:
-    return await _assets(factory).create_host(**request.model_dump())
+    require_permission(principal, Permission.ASSET_WRITE)
+    return await _assets(factory).create_host(
+        **request.model_dump(),
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
 
 
 @router.get("/hosts/{host_id}", operation_id="getHost")
@@ -192,10 +360,18 @@ async def update_host(
     host_id: UUID,
     request: HostUpdateRequest,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> Host:
+    require_permission(principal, Permission.ASSET_WRITE)
     values = request.model_dump(exclude={"version"})
-    return await _assets(factory).update_host(host_id, expected_version=request.version, **values)
+    return await _assets(factory).update_host(
+        host_id,
+        expected_version=request.version,
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+        **values,
+    )
 
 
 @router.delete(
@@ -204,9 +380,15 @@ async def update_host(
     operation_id="deleteHost",
 )
 async def delete_host(
-    host_id: UUID, factory: UnitOfWorkFactoryDep, _: UnsafeSessionDep
+    host_id: UUID, factory: UnitOfWorkFactoryDep, principal: UnsafeSessionDep
 ) -> Response:
-    await _assets(factory).delete_host(host_id)
+    require_permission(principal, Permission.ASSET_WRITE)
+    await _assets(factory).delete_host(
+        host_id,
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -219,9 +401,15 @@ async def list_groups(factory: UnitOfWorkFactoryDep, _: CurrentSessionDep) -> tu
 async def create_group(
     request: GroupRequest,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> HostGroup:
-    return await _assets(factory).create_group(**request.model_dump())
+    require_permission(principal, Permission.ASSET_WRITE)
+    return await _assets(factory).create_group(
+        **request.model_dump(),
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
 
 
 @router.put("/groups/{group_id}", operation_id="updateGroup")
@@ -229,9 +417,16 @@ async def update_group(
     group_id: UUID,
     request: GroupRequest,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> HostGroup:
-    return await _assets(factory).update_group(group_id, **request.model_dump())
+    require_permission(principal, Permission.ASSET_WRITE)
+    return await _assets(factory).update_group(
+        group_id,
+        **request.model_dump(),
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
 
 
 @router.delete(
@@ -240,9 +435,15 @@ async def update_group(
     operation_id="deleteGroup",
 )
 async def delete_group(
-    group_id: UUID, factory: UnitOfWorkFactoryDep, _: UnsafeSessionDep
+    group_id: UUID, factory: UnitOfWorkFactoryDep, principal: UnsafeSessionDep
 ) -> Response:
-    await _assets(factory).delete_group(group_id)
+    require_permission(principal, Permission.ASSET_WRITE)
+    await _assets(factory).delete_group(
+        group_id,
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -281,9 +482,15 @@ async def list_host_keys(
 async def scan_host_keys(
     host_id: UUID,
     factory: UnitOfWorkFactoryDep,
-    _: UnsafeSessionDep,
+    principal: UnsafeSessionDep,
 ) -> tuple[HostKeyScanResponse, ...]:
-    values = await _assets(factory).scan_host_keys(host_id)
+    require_permission(principal, Permission.ASSET_WRITE)
+    values = await _assets(factory).scan_host_keys(
+        host_id,
+        actor_user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
+    )
     return tuple(HostKeyScanResponse.model_validate(value) for value in values)
 
 
@@ -295,10 +502,13 @@ async def confirm_host_key(
     principal: UnsafeSessionDep,
     idempotency_key: str = Header(min_length=8, max_length=200),
 ) -> HostKey:
+    require_permission(principal, Permission.ASSET_WRITE)
     del idempotency_key
     return await _assets(factory).confirm_host_key(
         host_id,
         algorithm=request.algorithm,
         fingerprint=request.fingerprint,
         user_id=principal.user_id,
+        session_id=principal.session_id,
+        actor=principal,
     )

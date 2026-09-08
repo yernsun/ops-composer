@@ -2,13 +2,13 @@
 
 [简体中文](README.zh-CN.md) | English
 
-OpsComposer is a single-administrator Ansible operations console. Its M1 runtime depends only on
+OpsComposer is a multi-administrator Ansible operations console. Its runtime depends only on
 PostgreSQL 16: business data, the durable queue, worker leases, per-host locks, event replay, and
 authentication rate limits all live in PostgreSQL. There is no Redis, Celery, Kafka, object store,
 SQLAlchemy, or standalone Nginx service.
 
 The UI uses Vue 3, TypeScript, PrimeVue 4, Vue Router, and vue-i18n. The backend uses FastAPI,
-Psycopg 3 async pools, Ansible Runner, OpenSSH PTYs, Argon2id, and AES-256-GCM.
+Psycopg 3 async pools, Ansible Runner, OpenSSH PTYs, Argon2id, RFC 6238 TOTP, and AES-256-GCM.
 
 API, worker, CLI, migration, and Uvicorn output is single-line JSON. Durable business audit events
 are stored in PostgreSQL, are immutable except for retention deletion, and are kept for 180 days by
@@ -34,27 +34,47 @@ share one multi-stage image; FastAPI serves the compiled Vue application.
 ```bash
 cp .env.example .env
 openssl rand -hex 32       # APP_AUTH_RATE_LIMIT_SECRET
-openssl rand -base64 32    # OPS_COMPOSER_MASTER_KEY
+openssl rand -base64 32    # one keyring key (32 decoded bytes)
 # Fill the database credentials/URL, HTTPS origin, and trusted proxy, then:
 docker compose config
 docker compose up -d --build
 docker compose run --rm api ops-composer admin bootstrap --username admin
 ```
 
-Back up `OPS_COMPOSER_MASTER_KEY`: losing or changing it makes existing credentials undecryptable
-and startup fails closed. Percent-encode reserved password characters in `DATABASE_URL`. The API
+For new deployments, put the versioned JSON keyring in `volumes/keyring/keyring.json`, make it
+readable by container UID `10001` with mode `0400` or `0600`, and set
+`OPS_COMPOSER_MASTER_KEYRING_FILE=/run/secrets/ops-composer-keyring/keyring.json`. The file has this
+shape: `{"primaryVersion": 1, "keys": {"1": "<base64-32-byte-key>"}}`. The legacy
+`OPS_COMPOSER_MASTER_KEY` plus version remains supported for one compatibility cycle; configure
+exactly one mechanism. Back up every still-referenced key version: a missing key makes API and
+Worker startup fail closed. Percent-encode reserved password characters in `DATABASE_URL`. The API
 binds to `127.0.0.1:8080` by default and expects deployment-owned TLS termination. The default
 Playbook source mode is `both`: database Playbooks are Web-managed, while `playbooks/` is mounted
 read-only as the optional filesystem source.
 
+The bootstrap account is the initial `OWNER`. Existing installations are migrated to `OWNER`, all
+old login sessions are revoked, and TOTP enrollment is required at the next password login. Owners
+can create 24-hour activation codes for `OWNER`, `ADMIN`, `OPERATOR`, and `AUDITOR` accounts. The
+code, TOTP seed, and ten recovery codes are each shown only once. Credential changes, user
+governance, and key rotation require password plus MFA reauthentication within the previous ten
+minutes. If the only owner loses every factor, use the audited, confirmation-protected
+`ops-composer admin mfa-reset` break-glass command on the server.
+
 ## Playbook sources
 
 Set `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` to `database`, `mount`, or `both` (default). Database
-Playbooks support Web create, validation, edit, enable/disable, and soft delete. Every successful
-save creates an immutable revision, and a Run pins that exact revision. A queued or historical Run
-therefore remains executable after later edits or deletion. Database Playbooks are isolated
-single-file projects and cannot implicitly read roles, templates, files, or vars from the mounted
-workspace.
+Playbooks support Web create, validation, edit, enable/disable, soft delete, immutable revision
+history, restricted diffs, restore-as-new-revision, and deterministic ZIP import/export. A Run pins
+the exact revision. Database projects can contain up to 256 UTF-8 text files/10 MiB, with one YAML
+entrypoint and safe roles/templates/files/vars; custom plugins, collections, inventories,
+`ansible.cfg`, symlinks, executable files, path traversal, and network dependency downloads are
+rejected. Projects remain isolated from the mounted workspace.
+
+A controlled JSON Schema subset generates Run parameter forms. Sensitive string parameters have
+no defaults, are encrypted separately, are consumed atomically during preparation, and never enter
+operation snapshots, API responses, logs, audit, or RunEvent. Retrying after consumption requires
+the operator to enter them again. Check mode is available only when the pinned revision declares
+support.
 
 Mounted Playbooks remain read-only. Only `playbooks/**/*.yml` and `playbooks/**/*.yaml` are
 discovered; traversal, absolute paths, and escaping symlinks are rejected. In `both` mode, a missing
@@ -73,9 +93,10 @@ Web Shell and Runs share the PostgreSQL host lock, so one host permits only one 
 time. Defaults are 5 sessions globally, a 30-minute idle timeout, and an 8-hour hard limit,
 configured by `OPS_COMPOSER_WEB_SHELL_MAX_SESSIONS`,
 `OPS_COMPOSER_WEB_SHELL_IDLE_TIMEOUT_SECONDS`, and
-`OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS`. A host must be enabled, use an enabled PASSWORD
-credential, and have a manually confirmed SSH host key. The password reaches `sshpass -d` only
-through an anonymous pipe; it is never placed in arguments, environment variables, or files.
+`OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS`. A host must be enabled, use an enabled PASSWORD or
+SSH_PRIVATE_KEY credential, and have a manually confirmed SSH host key. Passwords and encrypted-key
+passphrases reach helpers only through anonymous pipes. Private-key sessions use an isolated
+`ssh-agent`; all agent processes, sockets, key files, and `0700` workspaces are cleaned on exit.
 
 A production reverse proxy must forward WebSocket Upgrade requests and allow connections longer
 than the configured maximum duration. The browser Origin must be listed in `APP_ALLOWED_ORIGINS`.
@@ -87,7 +108,8 @@ driver with `20m × 10` rotation. Structured logs and audit metadata exclude com
 passwords, cookies, tokens, the master key, database URLs, complete inventories, and raw Ansible
 payloads. Configure retention with `OPS_COMPOSER_AUDIT_RETENTION_DAYS` (`1..3650`).
 
-Audit access is intentionally CLI-only:
+Owners, administrators, and auditors can search and export audit data in the Web UI. A controlled
+CLI remains available for offline operations and retention purge:
 
 ```bash
 docker compose run --rm api ops-composer audit list --jsonl

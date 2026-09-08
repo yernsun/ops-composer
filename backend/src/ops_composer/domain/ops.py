@@ -11,6 +11,7 @@ from ops_composer.domain.base import StrictDomainModel
 
 class CredentialType(StrEnum):
     PASSWORD = "PASSWORD"
+    SSH_PRIVATE_KEY = "SSH_PRIVATE_KEY"
 
 
 class RunKind(StrEnum):
@@ -30,6 +31,11 @@ class RunStatus(StrEnum):
     TIMED_OUT = "TIMED_OUT"
     INTERRUPTED = "INTERRUPTED"
     REJECTED = "REJECTED"
+
+
+class RequestFingerprintScheme(StrEnum):
+    LEGACY_SHA256 = "LEGACY_SHA256"
+    HMAC_SHA256_V1 = "HMAC_SHA256_V1"
 
 
 TERMINAL_RUN_STATUSES = frozenset(
@@ -72,6 +78,11 @@ class PlaybookSource(StrEnum):
     MOUNT = "MOUNT"
 
 
+class PlaybookRevisionFormat(StrEnum):
+    LEGACY_SINGLE_YAML = "LEGACY_SINGLE_YAML"
+    PROJECT = "PROJECT"
+
+
 class PlaybookReference(StrictDomainModel):
     source: PlaybookSource
     playbook_id: UUID | None = None
@@ -94,6 +105,7 @@ class Credential(StrictDomainModel):
     username: str
     public_config: dict[str, object] = Field(default_factory=dict)
     current_version: int = Field(ge=1)
+    lock_version: int = Field(default=1, ge=1)
     enabled: bool
     description: str
     deleted_at: datetime | None = None
@@ -150,6 +162,7 @@ class ResolvedHost(StrictDomainModel):
     ssh_port: int
     credential_id: UUID
     credential_version: int
+    credential_type: CredentialType = CredentialType.PASSWORD
     credential_username: str
     credential_public_config: dict[str, object] = Field(default_factory=dict)
     python_interpreter: str | None = None
@@ -184,6 +197,7 @@ class Run(StrictDomainModel):
     requested_by: UUID
     idempotency_key: str
     request_fingerprint: str
+    request_fingerprint_scheme: RequestFingerprintScheme = RequestFingerprintScheme.LEGACY_SHA256
     created_at: datetime
     updated_at: datetime
 
@@ -232,6 +246,9 @@ class Playbook(StrictDomainModel):
     size: int = Field(ge=0)
     modified_at: datetime
     sha256: str
+    revision_format: PlaybookRevisionFormat = PlaybookRevisionFormat.LEGACY_SINGLE_YAML
+    entrypoint: str | None = None
+    supports_check_mode: bool = False
 
 
 class DatabasePlaybook(StrictDomainModel):
@@ -248,20 +265,47 @@ class DatabasePlaybook(StrictDomainModel):
     updated_at: datetime
 
 
-class PlaybookRevision(StrictDomainModel):
-    model_config = ConfigDict(
-        **{**StrictDomainModel.model_config, "str_strip_whitespace": False}
-    )
+class PlaybookRevisionFile(StrictDomainModel):
+    model_config = ConfigDict(**{**StrictDomainModel.model_config, "str_strip_whitespace": False})
 
-    playbook_id: UUID
-    revision: int = Field(ge=1)
+    path: str
     content: str = Field(repr=False)
     sha256: str
     size_bytes: int = Field(ge=1, le=1024 * 1024)
+
+
+class PlaybookRevision(StrictDomainModel):
+    model_config = ConfigDict(**{**StrictDomainModel.model_config, "str_strip_whitespace": False})
+
+    playbook_id: UUID
+    revision: int = Field(ge=1)
+    content: str | None = Field(default=None, repr=False)
+    sha256: str
+    size_bytes: int = Field(ge=1, le=10 * 1024 * 1024)
     validator_version: str
     validated_at: datetime
     created_by: UUID
     created_at: datetime
+    revision_format: PlaybookRevisionFormat = PlaybookRevisionFormat.LEGACY_SINGLE_YAML
+    entrypoint: str | None = None
+    parameter_schema: dict[str, object] = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+    )
+    supports_check_mode: bool = False
+    files: tuple[PlaybookRevisionFile, ...] = ()
+
+    @model_validator(mode="after")
+    def require_revision_payload(self) -> PlaybookRevision:
+        if self.revision_format is PlaybookRevisionFormat.LEGACY_SINGLE_YAML:
+            if self.content is None or self.entrypoint is not None or self.files:
+                raise ValueError("legacy Playbook revisions require only content")
+        elif self.content is not None or self.entrypoint is None or not self.files:
+            raise ValueError("project Playbook revisions require entrypoint and files")
+        return self
 
 
 class DatabasePlaybookDocument(StrictDomainModel):

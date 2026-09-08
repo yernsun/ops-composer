@@ -2,13 +2,24 @@ from ops_composer.main import app
 from ops_composer.settings import Settings
 
 
-def test_m1_openapi_contract_is_single_admin_and_complete() -> None:
+def test_p2_openapi_contract_exposes_governance_keyring_and_projects() -> None:
     schema = app.openapi()
     paths = set(schema["paths"])
     expected = {
         "/health/live",
         "/health/ready",
         "/api/v1/auth/login",
+        "/api/v1/auth/activate",
+        "/api/v1/auth/mfa/verify",
+        "/api/v1/auth/mfa/enroll",
+        "/api/v1/auth/mfa/enroll/confirm",
+        "/api/v1/auth/reauthenticate",
+        "/api/v1/auth/security",
+        "/api/v1/auth/recovery-codes",
+        "/api/v1/users",
+        "/api/v1/users/{user_id}",
+        "/api/v1/users/{user_id}/activation",
+        "/api/v1/users/{user_id}/mfa/reset",
         "/api/v1/auth/session",
         "/api/v1/auth/logout",
         "/api/v1/overview",
@@ -27,26 +38,43 @@ def test_m1_openapi_contract_is_single_admin_and_complete() -> None:
         "/api/v1/playbooks/config",
         "/api/v1/playbooks/database",
         "/api/v1/playbooks/database/{playbook_id}",
+        "/api/v1/playbooks/database/import",
+        "/api/v1/playbooks/database/{playbook_id}/revisions",
+        "/api/v1/playbooks/database/{playbook_id}/revisions/{revision}/diff",
+        "/api/v1/playbooks/database/{playbook_id}/revisions/{revision}/restore",
+        "/api/v1/playbooks/database/{playbook_id}/revisions/{revision}/export",
         "/api/v1/playbooks/detail",
         "/api/v1/playbooks/validate",
         "/api/v1/runs/commands",
         "/api/v1/runs/playbooks",
+        "/api/v1/runs/playbooks/preview",
         "/api/v1/runs/{run_id}",
         "/api/v1/runs/{run_id}/cancel",
         "/api/v1/runs/{run_id}/retry",
         "/api/v1/runs/{run_id}/events/stream",
         "/api/v1/system/info",
         "/api/v1/system/doctor",
+        "/api/v1/system/keyring",
+        "/api/v1/system/keyring/rotations",
+        "/api/v1/audit-events",
+        "/api/v1/audit-events/export",
         "/api/v1/web-shell-sessions/{web_shell_session_id}",
     }
     assert expected <= paths
-    assert len(paths) == 38
+    assert len(paths) == 61
     assert not any("signup" in path or "workspace" in path for path in paths)
 
     session = schema["components"]["schemas"]["SessionResponse"]["properties"]
     assert session["userId"]["format"] == "uuid"
     assert session["expiresAt"]["format"] == "date-time"
     assert "username" in session
+    assert {
+        "role",
+        "permissions",
+        "mfaEnabled",
+        "mfaEnrollmentRequired",
+        "elevatedUntil",
+    } <= set(session)
 
     create_run = schema["paths"]["/api/v1/runs/commands"]["post"]
     assert create_run["operationId"] == "createCommandRun"
@@ -78,6 +106,7 @@ def test_settings_only_expose_postgresql_and_local_runtime_capabilities() -> Non
     fields = Settings.model_fields
     assert "database_url" in fields
     assert "master_key" in fields
+    assert "master_keyring_file" in fields
     assert "playbook_workspace" in fields
     assert "playbook_source_mode" in fields
     assert "runtime_dir" in fields

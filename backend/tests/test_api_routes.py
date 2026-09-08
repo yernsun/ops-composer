@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, Mock
@@ -17,6 +18,7 @@ from ops_composer.domain.base import utc_now
 from ops_composer.domain.ops import (
     CommandMode,
     Credential,
+    CredentialRevision,
     CredentialType,
     Host,
     HostGroup,
@@ -44,7 +46,8 @@ def _principal() -> SessionPrincipal:
         user_id=uuid4(),
         username="admin",
         csrf_hash="csrf-hash",
-        expires_at=now,
+        elevated_until=now + timedelta(minutes=10),
+        expires_at=now + timedelta(days=1),
     )
 
 
@@ -168,8 +171,32 @@ async def test_asset_api_routes_delegate_without_exposing_secret_values(
     credentials = Mock()
     credentials.list = AsyncMock(return_value=(credential,))
     credentials.create = AsyncMock(return_value=credential)
+    private_credential = credential.model_copy(
+        update={
+            "credential_type": CredentialType.SSH_PRIVATE_KEY,
+            "public_config": {
+                "algorithm": "ED25519",
+                "fingerprint": "SHA256:test",
+                "hasPassphrase": True,
+            },
+        }
+    )
+    credentials.create_ssh_private_key = AsyncMock(return_value=private_credential)
     credentials.get = AsyncMock(return_value=credential)
     credentials.rotate = AsyncMock(return_value=credential)
+    credentials.rotate_ssh_private_key = AsyncMock(return_value=private_credential)
+    credentials.update = AsyncMock(return_value=credential)
+    credentials.list_revisions = AsyncMock(
+        return_value=(
+            CredentialRevision(
+                credential_id=credential.credential_id,
+                version=1,
+                encrypted_secret=b"not-exposed",
+                encryption_key_version=2,
+                created_at=credential.created_at,
+            ),
+        )
+    )
     credentials.delete = AsyncMock()
     assets = Mock()
     assets.list_hosts = AsyncMock(return_value=(host,))
@@ -206,6 +233,21 @@ async def test_asset_api_routes_delegate_without_exposing_secret_values(
     )
     assert await assets_api.create_credential(create_request, factory, principal) == credential
     assert credentials.create.await_args.kwargs["password"] == "ssh-password"
+    private_request = assets_api.SshPrivateKeyCredentialCreateRequest(
+        credential_type=CredentialType.SSH_PRIVATE_KEY,
+        name="private-key",
+        username="deploy",
+        private_key="-----BEGIN PRIVATE KEY-----\nTEST-ONLY\n-----END PRIVATE KEY-----",
+        passphrase="key-passphrase",
+    )
+    assert (
+        await assets_api.create_credential(private_request, factory, principal)
+        == private_credential
+    )
+    assert (
+        credentials.create_ssh_private_key.await_args.kwargs["private_key"]
+        == private_request.private_key.get_secret_value()
+    )
     fetched_credential = await assets_api.get_credential(
         credential.credential_id, factory, principal
     )
@@ -220,6 +262,41 @@ async def test_asset_api_routes_delegate_without_exposing_secret_values(
         )
         == credential
     )
+    private_rotate = assets_api.SshPrivateKeyCredentialRotateRequest(
+        credential_type=CredentialType.SSH_PRIVATE_KEY,
+        private_key="-----BEGIN PRIVATE KEY-----\nROTATED\n-----END PRIVATE KEY-----",
+        passphrase="rotated-passphrase",
+    )
+    assert (
+        await assets_api.rotate_credential(
+            credential.credential_id, private_rotate, factory, principal
+        )
+        == private_credential
+    )
+    update_credential = assets_api.CredentialUpdateRequest(
+        name="renamed",
+        username="deploy",
+        description="updated",
+        enabled=False,
+        become_enabled=False,
+        become_method="sudo",
+        become_user="root",
+        lock_version=1,
+    )
+    assert (
+        await assets_api.update_credential(
+            credential.credential_id, update_credential, factory, principal
+        )
+        == credential
+    )
+    revision_rows = await assets_api.list_credential_revisions(
+        credential.credential_id, factory, principal
+    )
+    assert revision_rows[0].model_dump(by_alias=True) == {
+        "version": 1,
+        "encryptionKeyVersion": 2,
+        "createdAt": credential.created_at,
+    }
     deleted_credential = await assets_api.delete_credential(
         credential.credential_id, factory, principal
     )
@@ -291,6 +368,19 @@ async def test_run_playbook_and_system_routes_delegate_and_bind_context(
     service.detail = AsyncMock(return_value=(run, (target,)))
     service.create_command = AsyncMock(return_value=run)
     service.create_playbook = AsyncMock(return_value=run)
+    service.preview_playbook = AsyncMock(
+        return_value={
+            "targetCount": 1,
+            "playbookSource": "DATABASE",
+            "revision": 3,
+            "digest": "d" * 64,
+            "checkMode": True,
+            "tags": ["safe"],
+            "skipTags": [],
+            "parameterNames": ["environment", "apiToken"],
+            "sensitiveParameters": [{"name": "apiToken", "supplied": True}],
+        }
+    )
     service.create_ping = AsyncMock(return_value=run)
     service.cancel = AsyncMock(return_value=run)
     retried = run.model_copy(update={"run_id": uuid4(), "source_run_id": run.run_id})
@@ -335,10 +425,49 @@ async def test_run_playbook_and_system_routes_delegate_and_bind_context(
         )
         assert (
             await runs_api.create_playbook_run(
-                playbook_request, "playbook-route-key", factory, principal
+                playbook_request, Response(), "playbook-route-key", factory, principal
             )
             == run
         )
+        database_playbook_id = uuid4()
+        modern_playbook_request = runs_api.PlaybookRunRequest(
+            target=target_request,
+            playbook=runs_api.PlaybookReferenceRequest(
+                source=PlaybookSource.DATABASE,
+                playbook_id=database_playbook_id,
+            ),
+            parameters={"environment": "test", "apiToken": "route-secret"},
+            check_mode=True,
+            tags=("safe",),
+        )
+        modern_response = Response()
+        assert (
+            await runs_api.create_playbook_run(
+                modern_playbook_request,
+                modern_response,
+                "modern-playbook-key",
+                factory,
+                principal,
+            )
+            == run
+        )
+        assert "Deprecation" not in modern_response.headers
+        preview = await runs_api.preview_playbook_run(
+            modern_playbook_request,
+            Response(),
+            factory,
+            principal,
+        )
+        assert preview.revision == 3
+        assert preview.sensitive_parameters[0].supplied
+        legacy_preview_response = Response()
+        await runs_api.preview_playbook_run(
+            playbook_request,
+            legacy_preview_response,
+            factory,
+            principal,
+        )
+        assert legacy_preview_response.headers["Deprecation"] == "true"
         assert (
             await runs_api.test_host(target.host_id, "ping-route-key", factory, principal)
             == run
@@ -348,9 +477,24 @@ async def test_run_playbook_and_system_routes_delegate_and_bind_context(
             await runs_api.retry_run(run.run_id, "retry-route-key", factory, principal)
             == retried
         )
+        await runs_api.retry_run(
+            run.run_id,
+            "retry-route-parameters-key",
+            factory,
+            principal,
+            runs_api.RetryRunRequest(parameters={"apiToken": "replacement-secret"}),
+        )
+        assert service.retry.await_args.kwargs["parameters"] == {
+            "apiToken": "replacement-secret"
+        }
         assert await runs_api.list_run_events(run.run_id, factory, principal, after=3) == (
             event,
         )
+
+    with pytest.raises(ValueError, match="reference is missing"):
+        runs_api.PlaybookRunRequest.model_construct(
+            target=runs_api.TargetRequest(kind=TargetKind.ALL)
+        ).reference()
 
     playbook_service = Mock()
     playbook_service.list = AsyncMock(return_value=(playbook,))

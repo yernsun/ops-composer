@@ -17,7 +17,10 @@ from ops_composer.db.migrations.audit import AUDIT
 from ops_composer.db.migrations.auth import AUTH
 from ops_composer.db.migrations.auth_security import AUTH_SECURITY
 from ops_composer.db.migrations.core import CORE
+from ops_composer.db.migrations.governance import GOVERNANCE
+from ops_composer.db.migrations.keyring import KEYRING
 from ops_composer.db.migrations.ops_composer import OPS_COMPOSER
+from ops_composer.db.migrations.playbook_projects import PLAYBOOK_PROJECTS
 from ops_composer.db.migrations.playbooks import PLAYBOOKS
 from ops_composer.db.migrations.web_shell import WEB_SHELL
 from ops_composer.db.types import DbConnection
@@ -194,9 +197,20 @@ async def test_readiness_repository_requires_exact_current_checksums() -> None:
     assert await repository.is_ready() is True
 
 
-def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
+def test_ops_composer_p2_schema_is_forward_only_and_postgresql_native() -> None:
     result = ordered_migrations(
-        (WEB_SHELL, PLAYBOOKS, AUDIT, OPS_COMPOSER, AUTH_SECURITY, AUTH, CORE)
+        (
+            PLAYBOOK_PROJECTS,
+            KEYRING,
+            GOVERNANCE,
+            WEB_SHELL,
+            PLAYBOOKS,
+            AUDIT,
+            OPS_COMPOSER,
+            AUTH_SECURITY,
+            AUTH,
+            CORE,
+        )
     )
     assert [entry.migration_id for entry in result] == [
         "0001_core",
@@ -206,6 +220,9 @@ def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
         "0040_audit_events",
         "0050_playbooks",
         "0060_web_shell",
+        "0070_multi_admin_governance",
+        "0080_credential_keyring",
+        "0090_playbook_projects",
     ]
     schema_sql = OPS_COMPOSER.up_sql.lower()
     assert "jsonb" in schema_sql
@@ -224,7 +241,6 @@ def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
     assert "host_execution_locks" in web_shell_sql
     assert "web_shell_session_id" in web_shell_sql
     assert "host_run_locks rename to host_execution_locks" in web_shell_sql
-    assert all(f"'{action.value.casefold()}'" in web_shell_sql for action in AuditAction)
     assert "foreign key" not in audit_sql
     assert "audit_events_reject_update" in audit_sql
 
@@ -234,3 +250,22 @@ def test_ops_composer_schema_is_forward_only_and_postgresql_native() -> None:
     assert "deferrable initially deferred" in playbook_sql
     assert "playbook_revision" in playbook_sql
     assert "on delete restrict" in playbook_sql
+
+    governance_sql = GOVERNANCE.up_sql.lower()
+    assert "drop column singleton_key" in governance_sql
+    assert "pending_activation" in governance_sql
+    assert "at least one active owner" in governance_sql
+    assert "user_mfa_factors" in governance_sql
+
+    keyring_sql = KEYRING.up_sql.lower()
+    assert "ssh_private_key" in keyring_sql
+    assert "credential_secret_envelopes" in keyring_sql
+    assert "encryption_key_registry" in keyring_sql
+
+    projects_sql = PLAYBOOK_PROJECTS.up_sql.lower()
+    assert "playbook_revision_files" in projects_sql
+    assert "run_secret_inputs" in projects_sql
+    assert "legacy_single_yaml" in projects_sql
+    assert "revision_format" in projects_sql
+    assert "event_action ~ '^[a-z][a-z0-9_]{0,127}$'" in projects_sql
+    assert all(action.value.isupper() for action in AuditAction)

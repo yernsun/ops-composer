@@ -8,6 +8,12 @@ import re
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+
+from ops_composer.auth.models import Permission, SessionPrincipal
+from ops_composer.auth.service import require_permission, require_recent_reauthentication
 from ops_composer.domain.audit import (
     AuditAction,
     AuditOutcome,
@@ -18,6 +24,7 @@ from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     ConflictError,
     HostKeyChangedError,
+    KeyVersionMissingError,
     NotFoundError,
     ValidationError,
 )
@@ -33,6 +40,7 @@ from ops_composer.domain.ops import (
 )
 from ops_composer.services.audit import AuditService, emit_audit_event, new_audit_event
 from ops_composer.services.crypto import CredentialCipher
+from ops_composer.services.encryption import EncryptionService
 from ops_composer.uow.factory import UnitOfWorkFactory
 
 HOST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -97,40 +105,7 @@ class CredentialService:
             return await unit_of_work.assets.list_credentials()
 
     async def ensure_master_key(self) -> None:
-        event = None
-        async with self._unit_of_work_factory() as unit_of_work:
-            check = await unit_of_work.assets.get_setting("encryption.master-key-check")
-            if check is None:
-                await unit_of_work.assets.put_setting(
-                    "encryption.master-key-check",
-                    {
-                        "version": self._cipher.key_version,
-                        "envelope": self._cipher.encrypt_check(),
-                    },
-                    utc_now(),
-                )
-                event = new_audit_event(
-                    AuditAction.MASTER_KEY_INITIALIZED,
-                    AuditOutcome.SUCCEEDED,
-                    source=AuditSource.SYSTEM,
-                    metadata={"key_version": self._cipher.key_version},
-                )
-            else:
-                envelope = check.get("envelope")
-                version = check.get("version")
-                if not isinstance(envelope, str) or version != self._cipher.key_version:
-                    raise ValueError(
-                        "master-key check metadata is invalid or uses another key version"
-                    )
-                self._cipher.validate_check(envelope)
-                event = new_audit_event(
-                    AuditAction.MASTER_KEY_VALIDATED,
-                    AuditOutcome.SUCCEEDED,
-                    source=AuditSource.SYSTEM,
-                    metadata={"key_version": self._cipher.key_version},
-                )
-            await unit_of_work.audit.append(event)
-        emit_audit_event(event)
+        await EncryptionService(self._unit_of_work_factory, self._cipher.keyring).ensure_keyring()
 
     async def get(self, credential_id: UUID) -> Credential:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -138,6 +113,120 @@ class CredentialService:
             if credential is None:
                 raise NotFoundError("credential not found")
             return credential
+
+    @staticmethod
+    def _common_public_config(
+        *, become_enabled: bool, become_method: str, become_user: str
+    ) -> dict[str, object]:
+        if become_method not in {"sudo", "su", "doas"}:
+            raise ValidationError("unsupported privilege escalation method")
+        return {
+            "becomeEnabled": become_enabled,
+            "becomeMethod": become_method,
+            "becomeUser": become_user.strip() or "root",
+        }
+
+    @staticmethod
+    def _private_key_metadata(private_key: str, passphrase: str | None) -> dict[str, object]:
+        encoded = private_key.encode("utf-8")
+        password = passphrase.encode("utf-8") if passphrase is not None else None
+        key: object
+        try:
+            try:
+                key = serialization.load_ssh_private_key(encoded, password=password)
+            except ValueError:
+                key = serialization.load_pem_private_key(encoded, password=password)
+        except (TypeError, ValueError, UnsupportedAlgorithm) as error:
+            raise ValidationError("SSH private key or passphrase is invalid") from error
+        if isinstance(key, ed25519.Ed25519PrivateKey):
+            algorithm, bits = "ssh-ed25519", 256
+        elif isinstance(key, rsa.RSAPrivateKey):
+            if key.key_size < 2048:
+                raise ValidationError("RSA private keys must contain at least 2048 bits")
+            algorithm, bits = "ssh-rsa", key.key_size
+        elif isinstance(key, ec.EllipticCurvePrivateKey) and key.curve.name in {
+            "secp256r1",
+            "secp384r1",
+            "secp521r1",
+        }:
+            algorithm, bits = f"ecdsa-{key.curve.name}", key.key_size
+        else:
+            raise ValidationError("unsupported SSH private key algorithm")
+        public_line = key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+        )
+        try:
+            key_blob = base64.b64decode(public_line.split()[1], validate=True)
+        except (IndexError, ValueError) as error:
+            raise ValidationError("SSH public key derivation failed") from error
+        fingerprint = "SHA256:" + base64.b64encode(
+            hashlib.sha256(key_blob).digest()
+        ).decode().rstrip("=")
+        return {
+            "keyAlgorithm": algorithm,
+            "keyBits": bits,
+            "publicKeyFingerprint": fingerprint,
+            "hasPassphrase": passphrase is not None,
+        }
+
+    async def _create(
+        self,
+        *,
+        name: str,
+        username: str,
+        credential_type: CredentialType,
+        secret: dict[str, str],
+        public_config: dict[str, object],
+        description: str,
+        actor_user_id: UUID | None,
+        session_id: UUID | None,
+    ) -> Credential:
+        if not name.strip() or not username.strip():
+            raise ValidationError("name and username are required")
+        now = utc_now()
+        credential_id = uuid4()
+        credential = Credential(
+            credential_id=credential_id,
+            name=name.strip(),
+            credential_type=credential_type,
+            username=username.strip(),
+            public_config=public_config,
+            current_version=1,
+            lock_version=1,
+            enabled=True,
+            description=description.strip(),
+            created_at=now,
+            updated_at=now,
+        )
+        revision = CredentialRevision(
+            credential_id=credential_id,
+            version=1,
+            encrypted_secret=self._cipher.encrypt(credential_id, 1, secret),
+            encryption_key_version=self._cipher.key_version,
+            created_at=now,
+        )
+        event = new_audit_event(
+            AuditAction.CREDENTIAL_CREATED,
+            AuditOutcome.SUCCEEDED,
+            source=self._audit_source,
+            actor_user_id=actor_user_id,
+            session_id=session_id,
+            resource_type="credential",
+            resource_id=credential_id,
+            metadata={
+                "credential_name": credential.name,
+                "credential_type": credential_type.value,
+                "version": 1,
+                "become_enabled": bool(public_config.get("becomeEnabled")),
+                "key_algorithm": public_config.get("keyAlgorithm"),
+                "public_key_fingerprint": public_config.get("publicKeyFingerprint"),
+            },
+        )
+        async with self._unit_of_work_factory() as unit_of_work:
+            created = await unit_of_work.assets.add_credential(credential, revision)
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return created
 
     async def create(
         self,
@@ -150,76 +239,97 @@ class CredentialService:
         become_method: str,
         become_user: str,
         description: str,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
     ) -> Credential:
-        if not name.strip() or not username.strip() or not password:
-            raise ValidationError("name, username, and password are required")
-        if become_method not in {"sudo", "su", "doas"}:
-            raise ValidationError("unsupported privilege escalation method")
-        now = utc_now()
-        credential_id = uuid4()
-        public_config: dict[str, object] = {
-            "becomeEnabled": become_enabled,
-            "becomeMethod": become_method,
-            "becomeUser": become_user.strip() or "root",
-        }
-        credential = Credential(
-            credential_id=credential_id,
-            name=name.strip(),
-            credential_type=CredentialType.PASSWORD,
-            username=username.strip(),
-            public_config=public_config,
-            current_version=1,
-            enabled=True,
-            description=description.strip(),
-            created_at=now,
-            updated_at=now,
+        if actor is not None:
+            require_permission(actor, Permission.CREDENTIAL_WRITE)
+            require_recent_reauthentication(actor)
+        if not password:
+            raise ValidationError("password is required")
+        public_config = self._common_public_config(
+            become_enabled=become_enabled,
+            become_method=become_method,
+            become_user=become_user,
         )
+        public_config["hasBecomePassword"] = become_password is not None
         secret = {"password": password}
-        if become_password:
+        if become_password is not None:
             secret["becomePassword"] = become_password
-        revision = CredentialRevision(
-            credential_id=credential_id,
-            version=1,
-            encrypted_secret=self._cipher.encrypt(credential_id, 1, secret),
-            encryption_key_version=self._cipher.key_version,
-            created_at=now,
+        return await self._create(
+            name=name,
+            username=username,
+            credential_type=CredentialType.PASSWORD,
+            secret=secret,
+            public_config=public_config,
+            description=description,
+            actor_user_id=actor_user_id,
+            session_id=session_id,
         )
-        event = new_audit_event(
-            AuditAction.CREDENTIAL_CREATED,
-            AuditOutcome.SUCCEEDED,
-            source=self._audit_source,
-            resource_type="credential",
-            resource_id=credential_id,
-            metadata={
-                "credential_name": credential.name,
-                "credential_type": credential.credential_type.value,
-                "version": 1,
-                "become_enabled": become_enabled,
-            },
-        )
-        async with self._unit_of_work_factory() as unit_of_work:
-            created = await unit_of_work.assets.add_credential(credential, revision)
-            await unit_of_work.audit.append(event)
-        emit_audit_event(event)
-        return created
 
-    async def rotate(
+    async def create_ssh_private_key(
+        self,
+        *,
+        name: str,
+        username: str,
+        private_key: str,
+        passphrase: str | None,
+        become_password: str | None,
+        become_enabled: bool,
+        become_method: str,
+        become_user: str,
+        description: str,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> Credential:
+        if actor is not None:
+            require_permission(actor, Permission.CREDENTIAL_WRITE)
+            require_recent_reauthentication(actor)
+        metadata = self._private_key_metadata(private_key, passphrase)
+        public_config = (
+            self._common_public_config(
+                become_enabled=become_enabled,
+                become_method=become_method,
+                become_user=become_user,
+            )
+            | metadata
+        )
+        public_config["hasBecomePassword"] = become_password is not None
+        secret = {"privateKey": private_key}
+        if passphrase is not None:
+            secret["passphrase"] = passphrase
+        if become_password is not None:
+            secret["becomePassword"] = become_password
+        return await self._create(
+            name=name,
+            username=username,
+            credential_type=CredentialType.SSH_PRIVATE_KEY,
+            secret=secret,
+            public_config=public_config,
+            description=description,
+            actor_user_id=actor_user_id,
+            session_id=session_id,
+        )
+
+    async def _rotate(
         self,
         credential_id: UUID,
         *,
-        password: str,
-        become_password: str | None,
+        expected_type: CredentialType,
+        secret: dict[str, str],
+        public_metadata: dict[str, object],
+        actor_user_id: UUID | None,
+        session_id: UUID | None,
     ) -> Credential:
-        if not password:
-            raise ValidationError("password is required")
         async with self._unit_of_work_factory() as unit_of_work:
             credential = await unit_of_work.assets.get_credential(credential_id, for_update=True)
             if credential is None:
                 raise NotFoundError("credential not found")
+            if credential.credential_type is not expected_type:
+                raise ValidationError("credential revision type cannot be changed")
             version = credential.current_version + 1
-            secret = {"password": password}
-            if become_password:
-                secret["becomePassword"] = become_password
             now = utc_now()
             revision = CredentialRevision(
                 credential_id=credential_id,
@@ -231,34 +341,197 @@ class CredentialService:
             rotated = await unit_of_work.assets.rotate_credential(credential_id, revision, now)
             if rotated is None:
                 raise NotFoundError("credential not found")
+            if public_metadata:
+                updated_config = dict(rotated.public_config) | public_metadata
+                rotated = rotated.model_copy(
+                    update={"public_config": updated_config, "updated_at": now}
+                )
+                replaced = await unit_of_work.assets.update_credential_metadata(
+                    rotated, rotated.lock_version
+                )
+                if replaced is not None:
+                    rotated = replaced
             event = new_audit_event(
                 AuditAction.CREDENTIAL_ROTATED,
                 AuditOutcome.SUCCEEDED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="credential",
                 resource_id=credential_id,
-                metadata={"credential_name": rotated.name, "version": version},
+                metadata={
+                    "credential_name": rotated.name,
+                    "credential_type": rotated.credential_type.value,
+                    "version": version,
+                    "key_algorithm": rotated.public_config.get("keyAlgorithm"),
+                    "public_key_fingerprint": rotated.public_config.get("publicKeyFingerprint"),
+                },
             )
             await unit_of_work.audit.append(event)
         emit_audit_event(event)
         return rotated
+
+    async def rotate(
+        self,
+        credential_id: UUID,
+        *,
+        password: str,
+        become_password: str | None,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> Credential:
+        if actor is not None:
+            require_permission(actor, Permission.CREDENTIAL_WRITE)
+            require_recent_reauthentication(actor)
+        if not password:
+            raise ValidationError("password is required")
+        secret = {"password": password}
+        if become_password is not None:
+            secret["becomePassword"] = become_password
+        return await self._rotate(
+            credential_id,
+            expected_type=CredentialType.PASSWORD,
+            secret=secret,
+            public_metadata={"hasBecomePassword": become_password is not None},
+            actor_user_id=actor_user_id,
+            session_id=session_id,
+        )
+
+    async def rotate_ssh_private_key(
+        self,
+        credential_id: UUID,
+        *,
+        private_key: str,
+        passphrase: str | None,
+        become_password: str | None,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> Credential:
+        if actor is not None:
+            require_permission(actor, Permission.CREDENTIAL_WRITE)
+            require_recent_reauthentication(actor)
+        metadata = self._private_key_metadata(private_key, passphrase)
+        metadata["hasBecomePassword"] = become_password is not None
+        secret = {"privateKey": private_key}
+        if passphrase is not None:
+            secret["passphrase"] = passphrase
+        if become_password is not None:
+            secret["becomePassword"] = become_password
+        return await self._rotate(
+            credential_id,
+            expected_type=CredentialType.SSH_PRIVATE_KEY,
+            secret=secret,
+            public_metadata=metadata,
+            actor_user_id=actor_user_id,
+            session_id=session_id,
+        )
+
+    async def update(
+        self,
+        credential_id: UUID,
+        *,
+        name: str,
+        username: str,
+        description: str,
+        enabled: bool,
+        become_enabled: bool,
+        become_method: str,
+        become_user: str,
+        expected_lock_version: int,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> Credential:
+        if actor is not None:
+            require_permission(actor, Permission.CREDENTIAL_WRITE)
+            require_recent_reauthentication(actor)
+        common = self._common_public_config(
+            become_enabled=become_enabled,
+            become_method=become_method,
+            become_user=become_user,
+        )
+        now = utc_now()
+        async with self._unit_of_work_factory() as unit_of_work:
+            current = await unit_of_work.assets.get_credential(credential_id)
+            if current is None:
+                raise NotFoundError("credential not found")
+            candidate = current.model_copy(
+                update={
+                    "name": name.strip(),
+                    "username": username.strip(),
+                    "description": description.strip(),
+                    "enabled": enabled,
+                    "public_config": dict(current.public_config) | common,
+                    "updated_at": now,
+                }
+            )
+            updated = await unit_of_work.assets.update_credential_metadata(
+                candidate, expected_lock_version
+            )
+            if updated is None:
+                raise ConflictError("credential was modified by another request")
+            action = (
+                AuditAction.CREDENTIAL_ENABLED
+                if enabled and not current.enabled
+                else (
+                    AuditAction.CREDENTIAL_DISABLED
+                    if current.enabled and not enabled
+                    else AuditAction.CREDENTIAL_UPDATED
+                )
+            )
+            event = new_audit_event(
+                action,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
+                resource_type="credential",
+                resource_id=credential_id,
+                metadata={
+                    "credential_name": updated.name,
+                    "credential_type": updated.credential_type.value,
+                    "enabled": updated.enabled,
+                },
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return updated
+
+    async def list_revisions(self, credential_id: UUID) -> tuple[CredentialRevision, ...]:
+        async with self._unit_of_work_factory() as unit_of_work:
+            if await unit_of_work.assets.get_credential(credential_id) is None:
+                raise NotFoundError("credential not found")
+            return await unit_of_work.assets.list_credential_revisions(credential_id)
 
     async def decrypt_revision(self, credential_id: UUID, version: int) -> dict[str, str]:
         async with self._unit_of_work_factory() as unit_of_work:
             revision = await unit_of_work.assets.get_credential_revision(credential_id, version)
             if revision is None:
                 raise NotFoundError("credential revision not found")
-            if revision.encryption_key_version != self._cipher.key_version:
-                raise ValidationError(
-                    "credential uses an unavailable master-key version",
-                    details={"keyVersion": revision.encryption_key_version},
+            if not self._cipher.keyring.has_version(revision.encryption_key_version):
+                raise KeyVersionMissingError(
+                    details={"keyVersion": revision.encryption_key_version}
                 )
             return self._cipher.decrypt(
-                revision.credential_id, revision.version, revision.encrypted_secret
+                revision.credential_id,
+                revision.version,
+                revision.encrypted_secret,
+                revision.encryption_key_version,
             )
 
-    async def delete(self, credential_id: UUID) -> None:
-        event = None
+    async def delete(
+        self,
+        credential_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> None:
+        if actor is not None:
+            require_permission(actor, Permission.CREDENTIAL_WRITE)
+            require_recent_reauthentication(actor)
         async with self._unit_of_work_factory() as unit_of_work:
             credential = await unit_of_work.assets.get_credential(credential_id)
             if not await unit_of_work.assets.delete_credential(credential_id, utc_now()):
@@ -267,6 +540,8 @@ class CredentialService:
                 AuditAction.CREDENTIAL_DELETED,
                 AuditOutcome.SUCCEEDED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="credential",
                 resource_id=credential_id,
                 metadata={
@@ -310,7 +585,12 @@ class AssetService:
         enabled: bool,
         description: str,
         variables: dict[str, object],
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
     ) -> Host:
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
         if not HOST_NAME.fullmatch(name):
             raise ValidationError(
                 "host name may only contain letters, digits, dot, dash, and underscore"
@@ -335,6 +615,8 @@ class AssetService:
             AuditAction.HOST_CREATED,
             AuditOutcome.SUCCEEDED,
             source=self._audit_source,
+            actor_user_id=actor_user_id,
+            session_id=session_id,
             resource_type="host",
             resource_id=host.host_id,
             metadata={
@@ -353,7 +635,18 @@ class AssetService:
         emit_audit_event(event)
         return created
 
-    async def update_host(self, host_id: UUID, *, expected_version: int, **changes: object) -> Host:
+    async def update_host(
+        self,
+        host_id: UUID,
+        *,
+        expected_version: int,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+        **changes: object,
+    ) -> Host:
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
         event = None
         async with self._unit_of_work_factory() as unit_of_work:
             current = await unit_of_work.assets.get_host(host_id)
@@ -384,6 +677,8 @@ class AssetService:
                 AuditAction.HOST_UPDATED,
                 AuditOutcome.SUCCEEDED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="host",
                 resource_id=host_id,
                 metadata={
@@ -398,7 +693,16 @@ class AssetService:
         emit_audit_event(event)
         return updated
 
-    async def delete_host(self, host_id: UUID) -> None:
+    async def delete_host(
+        self,
+        host_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> None:
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
         event = None
         async with self._unit_of_work_factory() as unit_of_work:
             host = await unit_of_work.assets.get_host(host_id)
@@ -408,6 +712,8 @@ class AssetService:
                 AuditAction.HOST_DELETED,
                 AuditOutcome.SUCCEEDED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="host",
                 resource_id=host_id,
                 metadata={"host_name": host.name if host is not None else None},
@@ -426,7 +732,12 @@ class AssetService:
         description: str,
         variables: dict[str, object],
         host_ids: tuple[UUID, ...],
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
     ) -> HostGroup:
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
         if not GROUP_NAME.fullmatch(name):
             raise ValidationError("invalid group name")
         _validate_variables(variables)
@@ -444,6 +755,8 @@ class AssetService:
             AuditAction.GROUP_CREATED,
             AuditOutcome.SUCCEEDED,
             source=self._audit_source,
+            actor_user_id=actor_user_id,
+            session_id=session_id,
             resource_type="group",
             resource_id=group.group_id,
             metadata={"group_name": group.name, "host_count": len(host_ids)},
@@ -465,7 +778,12 @@ class AssetService:
         description: str,
         variables: dict[str, object],
         host_ids: tuple[UUID, ...],
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
     ) -> HostGroup:
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
         if not GROUP_NAME.fullmatch(name):
             raise ValidationError("invalid group name")
         _validate_variables(variables)
@@ -494,6 +812,8 @@ class AssetService:
                 AuditAction.GROUP_UPDATED,
                 AuditOutcome.SUCCEEDED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="group",
                 resource_id=group_id,
                 metadata={
@@ -516,7 +836,16 @@ class AssetService:
         if missing:
             raise ValidationError("group contains unknown hosts", details={"hostIds": missing})
 
-    async def delete_group(self, group_id: UUID) -> None:
+    async def delete_group(
+        self,
+        group_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> None:
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
         event = None
         async with self._unit_of_work_factory() as unit_of_work:
             group = await unit_of_work.assets.get_group(group_id)
@@ -526,6 +855,8 @@ class AssetService:
                 AuditAction.GROUP_DELETED,
                 AuditOutcome.SUCCEEDED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="group",
                 resource_id=group_id,
                 metadata={"group_name": group.name if group is not None else None},
@@ -565,7 +896,16 @@ class AssetService:
                 raise NotFoundError("host not found")
             return await unit_of_work.assets.list_host_keys(host_id)
 
-    async def scan_host_keys(self, host_id: UUID) -> tuple[dict[str, str], ...]:
+    async def scan_host_keys(
+        self,
+        host_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
+    ) -> tuple[dict[str, str], ...]:
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
         host = await self.get_host(host_id)
         audit = AuditService(self._unit_of_work_factory)
         await audit.record_best_effort(
@@ -573,6 +913,8 @@ class AssetService:
                 AuditAction.HOST_KEY_SCAN_STARTED,
                 AuditOutcome.STARTED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="host",
                 resource_id=host_id,
                 metadata={"host_name": host.name, "ssh_port": host.ssh_port},
@@ -596,6 +938,8 @@ class AssetService:
                     AuditAction.HOST_KEY_SCAN_FAILED,
                     AuditOutcome.FAILED,
                     source=self._audit_source,
+                    actor_user_id=actor_user_id,
+                    session_id=session_id,
                     severity=AuditSeverity.WARNING,
                     resource_type="host",
                     resource_id=host_id,
@@ -613,6 +957,8 @@ class AssetService:
                     AuditAction.HOST_KEY_SCAN_FAILED,
                     AuditOutcome.FAILED,
                     source=self._audit_source,
+                    actor_user_id=actor_user_id,
+                    session_id=session_id,
                     severity=AuditSeverity.WARNING,
                     resource_type="host",
                     resource_id=host_id,
@@ -651,6 +997,8 @@ class AssetService:
                     AuditAction.HOST_KEY_SCAN_FAILED,
                     AuditOutcome.FAILED,
                     source=self._audit_source,
+                    actor_user_id=actor_user_id,
+                    session_id=session_id,
                     severity=AuditSeverity.WARNING,
                     resource_type="host",
                     resource_id=host_id,
@@ -667,6 +1015,8 @@ class AssetService:
                 AuditAction.HOST_KEY_SCAN_SUCCEEDED,
                 AuditOutcome.SUCCEEDED,
                 source=self._audit_source,
+                actor_user_id=actor_user_id,
+                session_id=session_id,
                 resource_type="host",
                 resource_id=host_id,
                 metadata={
@@ -680,9 +1030,26 @@ class AssetService:
         return result
 
     async def confirm_host_key(
-        self, host_id: UUID, *, algorithm: str, fingerprint: str, user_id: UUID
+        self,
+        host_id: UUID,
+        *,
+        algorithm: str,
+        fingerprint: str,
+        user_id: UUID,
+        session_id: UUID | None = None,
+        actor: SessionPrincipal | None = None,
     ) -> HostKey:
-        scanned = await self.scan_host_keys(host_id)
+        if actor is not None:
+            require_permission(actor, Permission.ASSET_WRITE)
+        if actor is None:
+            scanned = await self.scan_host_keys(host_id)
+        else:
+            scanned = await self.scan_host_keys(
+                host_id,
+                actor_user_id=user_id,
+                session_id=session_id,
+                actor=actor,
+            )
         match = next(
             (
                 item
@@ -692,9 +1059,7 @@ class AssetService:
             None,
         )
         if match is None:
-            error = HostKeyChangedError(
-                "host key changed between scan and confirmation"
-            )
+            error = HostKeyChangedError("host key changed between scan and confirmation")
             await AuditService(self._unit_of_work_factory).record_best_effort(
                 new_audit_event(
                     AuditAction.HOST_KEY_CHANGED,
@@ -702,6 +1067,7 @@ class AssetService:
                     source=self._audit_source,
                     severity=AuditSeverity.WARNING,
                     actor_user_id=user_id,
+                    session_id=session_id,
                     resource_type="host",
                     resource_id=host_id,
                     error_code="host_key_changed",
@@ -725,6 +1091,7 @@ class AssetService:
             AuditOutcome.SUCCEEDED,
             source=self._audit_source,
             actor_user_id=user_id,
+            session_id=session_id,
             resource_type="host",
             resource_id=host_id,
             metadata={"algorithm": algorithm, "fingerprint": fingerprint},

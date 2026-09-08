@@ -1,6 +1,6 @@
 # PostgreSQL Run events
 
-M1 has no event broker, relay, consumer group, or outbox-to-Redis pipeline. A Service or the Worker
+OpsComposer has no event broker, relay, consumer group, or outbox-to-Redis pipeline. A Service or the Worker
 appends `run_events` in the same PostgreSQL transaction as the related Run transition. Sequence
 allocation uses `UPDATE runs ... RETURNING`, and `(run_id, sequence)` is unique.
 

@@ -78,14 +78,10 @@ class WebShellManager:
             with suppress(TimeoutError):
                 await asyncio.wait_for(asyncio.gather(*waiters), timeout=5)
 
-    async def create(
-        self, host_id: UUID, principal: SessionPrincipal
-    ) -> WebShellSession:
+    async def create(self, host_id: UUID, principal: SessionPrincipal) -> WebShellSession:
         return await self._service.create(host_id, principal, self.instance_id)
 
-    async def request_close(
-        self, web_shell_session_id: UUID, principal: SessionPrincipal
-    ) -> None:
+    async def request_close(self, web_shell_session_id: UUID, principal: SessionPrincipal) -> None:
         await self._service.request_close(web_shell_session_id, principal)
         async with self._active_lock:
             active = self._active.get(web_shell_session_id)
@@ -114,9 +110,7 @@ class WebShellManager:
             web_shell_session_id=web_shell_session_id,
         ):
             try:
-                launch = await self._service.claim(
-                    web_shell_session_id, principal, owner_id
-                )
+                launch = await self._service.claim(web_shell_session_id, principal, owner_id)
                 claimed = True
                 await websocket.accept()
                 terminal = await SshTerminal.start(launch, self._settings.runtime_dir)
@@ -142,9 +136,7 @@ class WebShellManager:
                 )
                 reason, exit_code = await self._serve(websocket, active, owner_id)
             except OpsError as error:
-                await self._reject_or_send_error(
-                    websocket, error.code, error.public_message
-                )
+                await self._reject_or_send_error(websocket, error.code, error.public_message)
                 reason = WebShellCloseReason.START_FAILED
             except SshTerminalStartError as error:
                 await self._send_error(
@@ -366,9 +358,7 @@ class WebShellManager:
         active.touch()
         return None
 
-    async def _monitor(
-        self, active: ActiveWebShell, owner_id: str
-    ) -> WebShellCloseReason:
+    async def _monitor(self, active: ActiveWebShell, owner_id: str) -> WebShellCloseReason:
         next_heartbeat = time.monotonic()
         while True:
             await asyncio.sleep(1)
@@ -395,9 +385,7 @@ class WebShellManager:
             next_heartbeat = now + WEB_SHELL_HEARTBEAT_SECONDS
 
     @staticmethod
-    async def _reject_or_send_error(
-        websocket: WebSocket, code: str, message: str
-    ) -> None:
+    async def _reject_or_send_error(websocket: WebSocket, code: str, message: str) -> None:
         if websocket.application_state is WebSocketState.CONNECTING:
             with suppress(RuntimeError, WebSocketDisconnect):
                 await websocket.close(code=4408, reason=code[:123])

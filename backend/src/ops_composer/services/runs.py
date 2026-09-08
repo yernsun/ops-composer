@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 from datetime import timedelta
 from uuid import UUID, uuid4
 
+from ops_composer.auth.models import Permission, SessionPrincipal
+from ops_composer.auth.service import require_permission
 from ops_composer.domain.audit import (
     AuditAction,
     AuditOutcome,
@@ -23,13 +26,16 @@ from ops_composer.domain.errors import (
     PlaybookNotFoundError,
     PlaybookSourceDisabledError,
     RunNotCancelableError,
+    SecretParametersRequiredError,
     ValidationError,
 )
 from ops_composer.domain.ops import (
     TERMINAL_RUN_STATUSES,
     CommandMode,
     PlaybookReference,
+    PlaybookRevisionFormat,
     PlaybookSource,
+    RequestFingerprintScheme,
     ResolvedHost,
     Run,
     RunEvent,
@@ -40,7 +46,10 @@ from ops_composer.domain.ops import (
     TargetKind,
 )
 from ops_composer.services.audit import AuditService, emit_audit_event, new_audit_event
+from ops_composer.services.crypto import MasterKeyring, build_master_keyring
+from ops_composer.services.encryption import EncryptionService
 from ops_composer.services.inventory import build_inventory
+from ops_composer.services.playbook_project import validate_parameters
 from ops_composer.services.playbooks import PlaybookCatalog
 from ops_composer.settings import Settings
 from ops_composer.uow.factory import UnitOfWorkFactory
@@ -54,6 +63,13 @@ def _fingerprint(payload: dict[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _hmac_fingerprint(payload: dict[str, object], pepper: bytes) -> str:
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    return hmac.new(pepper, encoded, hashlib.sha256).hexdigest()
+
+
 def _validate_extra_vars(value: object, path: str = "extraVars") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -63,7 +79,8 @@ def _validate_extra_vars(value: object, path: str = "extraVars") -> None:
                 for token in ("password", "passwd", "secret", "token", "private_key", "passphrase")
             ):
                 raise ValidationError(
-                    "secret and Ansible connection Extra Vars are not supported in M1",
+                    "secret and Ansible connection Extra Vars are not supported; "
+                    "use declared sensitive parameters",
                     details={"field": f"{path}.{key}"},
                 )
             _validate_extra_vars(item, f"{path}.{key}")
@@ -72,9 +89,7 @@ def _validate_extra_vars(value: object, path: str = "extraVars") -> None:
             _validate_extra_vars(item, f"{path}[{index}]")
 
 
-def _safe_operation_metadata(
-    kind: RunKind, operation_spec: dict[str, object]
-) -> dict[str, object]:
+def _safe_operation_metadata(kind: RunKind, operation_spec: dict[str, object]) -> dict[str, object]:
     if kind is RunKind.COMMAND:
         command = str(operation_spec.get("command", ""))
         return {
@@ -120,11 +135,17 @@ class RunService:
         playbooks: PlaybookCatalog | None = None,
         *,
         audit_source: AuditSource = AuditSource.API,
+        keyring: MasterKeyring | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._settings = settings
         self._playbooks = playbooks
         self._audit_source = audit_source
+        self._keyring = keyring or build_master_keyring(
+            keyring_file=settings.master_keyring_file,
+            fallback_key=settings.master_key.get_secret_value(),
+            fallback_version=settings.master_key_version,
+        )
 
     def _mounted_playbooks(self) -> PlaybookCatalog:
         if self._playbooks is None:
@@ -185,8 +206,7 @@ class RunService:
         raise HostKeyConfirmationRequiredError(
             details={
                 "hosts": [
-                    {"hostId": str(host_id), "name": names[host_id]}
-                    for host_id in missing_ids
+                    {"hostId": str(host_id), "name": names[host_id]} for host_id in missing_ids
                 ]
             }
         )
@@ -205,7 +225,14 @@ class RunService:
         shell_confirmed: bool,
         timeout_seconds: int,
         forks: int,
+        actor: SessionPrincipal | None = None,
     ) -> Run:
+        if actor is not None:
+            require_permission(
+                actor,
+                Permission.RUN_SHELL if mode is CommandMode.SHELL else Permission.RUN_STANDARD,
+            )
+            requested_by = actor.user_id
         if not command or len(command) > 4096 or "\0" in command:
             raise ValidationError("command must contain 1-4096 characters and no NUL byte")
         if mode is CommandMode.SHELL and not shell_confirmed:
@@ -245,7 +272,11 @@ class RunService:
         idempotency_key: str,
         host_id: UUID,
         timeout_seconds: int = 30,
+        actor: SessionPrincipal | None = None,
     ) -> Run:
+        if actor is not None:
+            require_permission(actor, Permission.RUN_STANDARD)
+            requested_by = actor.user_id
         target: dict[str, object] = {
             "kind": TargetKind.HOSTS.value,
             "hostIds": [str(host_id)],
@@ -275,14 +306,19 @@ class RunService:
         group_id: UUID | None,
         playbook: PlaybookReference,
         extra_vars: dict[str, object],
+        parameters: dict[str, object] | None = None,
+        check_mode: bool = False,
         tags: tuple[str, ...],
         skip_tags: tuple[str, ...],
         timeout_seconds: int,
         forks: int,
+        actor: SessionPrincipal | None = None,
     ) -> Run:
+        if actor is not None:
+            require_permission(actor, Permission.RUN_STANDARD)
+            requested_by = actor.user_id
         if not 1 <= timeout_seconds <= 86400 or not 1 <= forks <= 20:
             raise ValidationError("timeout or forks is outside the supported range")
-        _validate_extra_vars(extra_vars)
         self._require_playbook_source(playbook.source)
         workspace_revision: str | None = None
         database_playbook_id: UUID | None = None
@@ -303,13 +339,18 @@ class RunService:
                 "source": PlaybookSource.DATABASE.value,
                 "playbookId": str(playbook.playbook_id),
             }
+        supplied_values = parameters if parameters is not None else extra_vars
         operation: dict[str, object] = {
             "playbook": reference,
-            "extraVars": extra_vars,
             "tags": list(tags),
             "skipTags": list(skip_tags),
+            "checkMode": check_mode,
         }
         if playbook.source is PlaybookSource.MOUNT:
+            if check_mode:
+                raise ValidationError("mounted Playbooks do not declare Check Mode support")
+            _validate_extra_vars(supplied_values)
+            operation["extraVars"] = supplied_values
             operation["playbookPath"] = reference["path"]
         target: dict[str, object] = {
             "kind": target_kind.value,
@@ -329,7 +370,107 @@ class RunService:
             group_id=group_id,
             workspace_revision=workspace_revision,
             database_playbook_id=database_playbook_id,
+            playbook_parameters=(supplied_values if database_playbook_id is not None else None),
         )
+
+    async def preview_playbook(
+        self,
+        *,
+        actor: SessionPrincipal,
+        target_kind: TargetKind,
+        host_ids: tuple[UUID, ...],
+        group_id: UUID | None,
+        playbook: PlaybookReference,
+        parameters: dict[str, object],
+        check_mode: bool,
+        tags: tuple[str, ...],
+        skip_tags: tuple[str, ...],
+    ) -> dict[str, object]:
+        require_permission(actor, Permission.RUN_STANDARD)
+        self._require_playbook_source(playbook.source)
+        async with self._unit_of_work_factory() as unit_of_work:
+            hosts = await self._resolve(
+                unit_of_work,
+                target_kind=target_kind,
+                host_ids=host_ids,
+                group_id=group_id,
+            )
+            revision_number: int | None = None
+            digest: str
+            parameter_names: list[str] = []
+            sensitive_fields: list[dict[str, object]] = []
+            if playbook.source is PlaybookSource.MOUNT:
+                if playbook.path is None:
+                    raise PlaybookNotFoundError()
+                if check_mode:
+                    raise ValidationError("mounted Playbooks do not declare Check Mode support")
+                _validate_extra_vars(parameters)
+                mounted = await self._mounted_playbooks().get(playbook.path)
+                digest = mounted.sha256
+            else:
+                if playbook.playbook_id is None:
+                    raise PlaybookNotFoundError()
+                document = await unit_of_work.playbooks.get_document(playbook.playbook_id)
+                if document is None:
+                    raise PlaybookNotFoundError()
+                if not document.playbook.enabled:
+                    raise PlaybookDisabledError()
+                revision = document.revision
+                revision_number = revision.revision
+                digest = revision.sha256
+                if revision.revision_format is PlaybookRevisionFormat.PROJECT:
+                    validated = validate_parameters(revision.parameter_schema, parameters)
+                    parameter_names = list(validated.supplied_names)
+                    raw_properties = revision.parameter_schema.get("properties", {})
+                    if isinstance(raw_properties, dict):
+                        sensitive_fields = [
+                            {
+                                "name": name,
+                                "supplied": name in parameters,
+                            }
+                            for name, definition in sorted(raw_properties.items())
+                            if isinstance(definition, dict)
+                            and definition.get("x-ops-composer-sensitive") is True
+                        ]
+                    if check_mode and not revision.supports_check_mode:
+                        raise ValidationError(
+                            "Playbook revision does not declare Check Mode support"
+                        )
+                else:
+                    if check_mode:
+                        raise ValidationError("legacy Playbook revisions do not support Check Mode")
+                    _validate_extra_vars(parameters)
+                    parameter_names = sorted(parameters)
+        await AuditService(self._unit_of_work_factory).record_best_effort(
+            new_audit_event(
+                AuditAction.PLAYBOOK_PREVIEWED,
+                AuditOutcome.SUCCEEDED,
+                source=self._audit_source,
+                actor_user_id=actor.user_id,
+                session_id=actor.session_id,
+                resource_type="playbook",
+                resource_id=playbook.playbook_id or playbook.path,
+                metadata={
+                    "playbook_source": playbook.source.value,
+                    "target_count": len(hosts),
+                    "revision": revision_number,
+                    "check_mode": check_mode,
+                    "parameter_names": parameter_names,
+                    "sensitive_parameter_count": len(sensitive_fields),
+                },
+            )
+        )
+        return {
+            "targetCount": len(hosts),
+            "playbookSource": playbook.source.value,
+            "revision": revision_number,
+            "digest": digest,
+            "checkMode": check_mode,
+            "tags": list(tags),
+            "skipTags": list(skip_tags),
+            "parameterNames": parameter_names,
+            "sensitiveParameters": sensitive_fields,
+        }
 
     async def _create(
         self,
@@ -347,6 +488,7 @@ class RunService:
         workspace_revision: str | None,
         database_playbook_id: UUID | None = None,
         source_run_id: UUID | None = None,
+        playbook_parameters: dict[str, object] | None = None,
     ) -> Run:
         if not 8 <= len(idempotency_key) <= 200:
             raise ValidationError("Idempotency-Key must contain 8-200 characters")
@@ -358,7 +500,16 @@ class RunService:
             "forks": forks,
             "sourceRunId": str(source_run_id) if source_run_id else None,
         }
-        fingerprint = _fingerprint(request_payload)
+        fingerprint_scheme = RequestFingerprintScheme.LEGACY_SHA256
+        if playbook_parameters:
+            request_payload["parameters"] = playbook_parameters
+            pepper = await EncryptionService(
+                self._unit_of_work_factory, self._keyring
+            ).idempotency_pepper()
+            fingerprint = _hmac_fingerprint(request_payload, pepper)
+            fingerprint_scheme = RequestFingerprintScheme.HMAC_SHA256_V1
+        else:
+            fingerprint = _fingerprint(request_payload)
         existing: Run | None = None
         replay_event = None
         try:
@@ -417,6 +568,7 @@ class RunService:
                 )
                 resolved_operation_spec = copy.deepcopy(operation_spec)
                 playbook_revision: int | None = None
+                secret_inputs: dict[str, str] = {}
                 if database_playbook_id is not None:
                     failure_stage = "playbook_resolution"
                     document = await unit_of_work.playbooks.get_document(database_playbook_id)
@@ -431,6 +583,33 @@ class RunService:
                         raise PlaybookNotFoundError()
                     raw_reference["revision"] = playbook_revision
                     raw_reference["sha256"] = document.revision.sha256
+                    supplied = playbook_parameters or {}
+                    if document.revision.revision_format is PlaybookRevisionFormat.PROJECT:
+                        validated_parameters = validate_parameters(
+                            document.revision.parameter_schema,
+                            supplied,
+                        )
+                        if bool(resolved_operation_spec.get("checkMode")) and not (
+                            document.revision.supports_check_mode
+                        ):
+                            raise ValidationError(
+                                "Playbook revision does not declare Check Mode support"
+                            )
+                        resolved_operation_spec["extraVars"] = validated_parameters.public_values
+                        resolved_operation_spec["parameterNames"] = list(
+                            validated_parameters.supplied_names
+                        )
+                        resolved_operation_spec["secretParameterNames"] = sorted(
+                            validated_parameters.secret_values
+                        )
+                        secret_inputs = validated_parameters.secret_values
+                    else:
+                        if bool(resolved_operation_spec.get("checkMode")):
+                            raise ValidationError(
+                                "legacy Playbook revisions do not support Check Mode"
+                            )
+                        _validate_extra_vars(supplied)
+                        resolved_operation_spec["extraVars"] = supplied
                 failure_stage = "run_persistence"
                 safe_inventory = build_inventory(hosts)
                 resolved = [
@@ -444,7 +623,9 @@ class RunService:
                     }
                     for host in hosts
                 ]
-                versions = {str(host.credential_id): host.credential_version for host in hosts}
+                versions: dict[str, object] = {
+                    str(host.credential_id): host.credential_version for host in hosts
+                }
                 run = Run(
                     run_id=uuid4(),
                     source_run_id=source_run_id,
@@ -463,6 +644,7 @@ class RunService:
                     requested_by=requested_by,
                     idempotency_key=idempotency_key,
                     request_fingerprint=fingerprint,
+                    request_fingerprint_scheme=fingerprint_scheme,
                     created_at=now,
                     updated_at=now,
                 )
@@ -487,6 +669,19 @@ class RunService:
                         tuple((host.host_id, host.name) for host in hosts),
                     )
                     failure_stage = "run_persistence"
+                    if secret_inputs:
+                        encrypted_payload, key_version = self._keyring.encrypt_json(
+                            "run-parameters",
+                            str(persisted.run_id),
+                            secret_inputs,
+                        )
+                        await unit_of_work.runs.add_secret_inputs(
+                            persisted.run_id,
+                            encrypted_payload,
+                            key_version,
+                            tuple(sorted(secret_inputs)),
+                            now,
+                        )
                     await unit_of_work.runs.append_event(
                         RunEvent(
                             run_event_id=uuid4(),
@@ -498,9 +693,7 @@ class RunService:
                         )
                     )
                 audit_action = (
-                    AuditAction.RUN_CREATED
-                    if created
-                    else AuditAction.RUN_IDEMPOTENT_REPLAY
+                    AuditAction.RUN_CREATED if created else AuditAction.RUN_IDEMPOTENT_REPLAY
                 )
                 event = new_audit_event(
                     audit_action,
@@ -578,7 +771,16 @@ class RunService:
         async with self._unit_of_work_factory() as unit_of_work:
             return await unit_of_work.runs.list(limit=limit, offset=offset)
 
-    async def cancel(self, run_id: UUID, *, requested_by: UUID) -> Run:
+    async def cancel(
+        self,
+        run_id: UUID,
+        *,
+        requested_by: UUID,
+        actor: SessionPrincipal | None = None,
+    ) -> Run:
+        if actor is not None:
+            require_permission(actor, Permission.RUN_CANCEL)
+            requested_by = actor.user_id
         now = utc_now()
         async with self._unit_of_work_factory() as unit_of_work:
             current = await unit_of_work.runs.get(run_id)
@@ -613,7 +815,15 @@ class RunService:
         emit_audit_event(event)
         return run
 
-    async def retry(self, run_id: UUID, *, requested_by: UUID, idempotency_key: str) -> Run:
+    async def retry(
+        self,
+        run_id: UUID,
+        *,
+        requested_by: UUID,
+        idempotency_key: str,
+        actor: SessionPrincipal | None = None,
+        parameters: dict[str, object] | None = None,
+    ) -> Run:
         if not 8 <= len(idempotency_key) <= 200:
             raise ValidationError("Idempotency-Key must contain 8-200 characters")
         now = utc_now()
@@ -623,20 +833,83 @@ class RunService:
                 raise NotFoundError("run not found")
             if source.status not in TERMINAL_RUN_STATUSES:
                 raise ValidationError("only terminal runs can be retried")
+            if actor is not None:
+                permission = (
+                    Permission.RUN_SHELL
+                    if source.kind is RunKind.COMMAND
+                    and source.operation_spec.get("mode") == CommandMode.SHELL.value
+                    else Permission.RUN_STANDARD
+                )
+                require_permission(actor, permission)
+                requested_by = actor.user_id
             if source.kind is RunKind.PLAYBOOK:
                 self._require_playbook_source(_playbook_source(source.operation_spec))
             source_targets = await unit_of_work.runs.targets(run_id)
             if not source_targets:
                 raise ValidationError("source run target snapshot is invalid")
+            operation_spec = copy.deepcopy(source.operation_spec)
+            retry_secret_inputs: dict[str, str] = {}
+            raw_secret_names = operation_spec.get("secretParameterNames", [])
+            if not isinstance(raw_secret_names, list) or not all(
+                isinstance(item, str) for item in raw_secret_names
+            ):
+                raise ValidationError("source Run parameter metadata is invalid")
+            if source.kind is RunKind.PLAYBOOK and source.playbook_id is not None:
+                revision = await unit_of_work.playbooks.get_revision(
+                    source.playbook_id,
+                    source.playbook_revision or 0,
+                )
+                if revision is None:
+                    raise PlaybookNotFoundError("source Playbook revision is unavailable")
+                if revision.revision_format is PlaybookRevisionFormat.PROJECT:
+                    raw_public = operation_spec.get("extraVars", {})
+                    if not isinstance(raw_public, dict):
+                        raise ValidationError("source Run parameters are invalid")
+                    missing_secret_names = set(raw_secret_names) - set(parameters or {})
+                    if missing_secret_names:
+                        raise SecretParametersRequiredError(
+                            details={"fields": sorted(missing_secret_names)}
+                        )
+                    supplied = {**raw_public, **(parameters or {})}
+                    validated = validate_parameters(revision.parameter_schema, supplied)
+                    if set(raw_secret_names) - set(validated.secret_values):
+                        raise SecretParametersRequiredError(
+                            details={"fields": sorted(raw_secret_names)}
+                        )
+                    retry_secret_inputs = validated.secret_values
+                    operation_spec["extraVars"] = validated.public_values
+                    operation_spec["parameterNames"] = list(validated.supplied_names)
+                    operation_spec["secretParameterNames"] = sorted(retry_secret_inputs)
+                elif parameters:
+                    raise ValidationError("legacy Playbook Retry does not accept parameters")
+            elif parameters:
+                raise ValidationError("this Run type does not accept parameters")
             request_payload: dict[str, object] = {
                 "kind": source.kind.value,
                 "target": source.target_spec,
-                "operation": source.operation_spec,
+                "operation": operation_spec,
                 "timeoutSeconds": source.timeout_seconds,
                 "forks": source.forks,
                 "sourceRunId": str(source.run_id),
             }
-            fingerprint = _fingerprint(request_payload)
+            if retry_secret_inputs:
+                request_payload["secretParameters"] = retry_secret_inputs
+                pepper_envelope = await unit_of_work.encryption.get_system_secret(
+                    "run-idempotency-pepper"
+                )
+                if pepper_envelope is None:
+                    raise RuntimeError("idempotency pepper is not initialized")
+                pepper = self._keyring.decrypt_bytes(
+                    "system-secret",
+                    pepper_envelope.secret_name,
+                    pepper_envelope.encrypted_secret,
+                    pepper_envelope.encryption_key_version,
+                )
+                fingerprint = _hmac_fingerprint(request_payload, pepper)
+                fingerprint_scheme = RequestFingerprintScheme.HMAC_SHA256_V1
+            else:
+                fingerprint = _fingerprint(request_payload)
+                fingerprint_scheme = RequestFingerprintScheme.LEGACY_SHA256
             retried = Run(
                 run_id=uuid4(),
                 source_run_id=source.run_id,
@@ -644,7 +917,7 @@ class RunService:
                 status=RunStatus.QUEUED,
                 target_spec=copy.deepcopy(source.target_spec),
                 resolved_targets=copy.deepcopy(source.resolved_targets),
-                operation_spec=copy.deepcopy(source.operation_spec),
+                operation_spec=operation_spec,
                 inventory_snapshot=copy.deepcopy(source.inventory_snapshot),
                 workspace_revision=source.workspace_revision,
                 playbook_id=source.playbook_id,
@@ -655,6 +928,7 @@ class RunService:
                 requested_by=requested_by,
                 idempotency_key=idempotency_key,
                 request_fingerprint=fingerprint,
+                request_fingerprint_scheme=fingerprint_scheme,
                 created_at=now,
                 updated_at=now,
             )
@@ -677,6 +951,19 @@ class RunService:
                     unit_of_work,
                     tuple((target.host_id, target.host_name) for target in source_targets),
                 )
+                if retry_secret_inputs:
+                    encrypted_payload, key_version = self._keyring.encrypt_json(
+                        "run-parameters",
+                        str(persisted.run_id),
+                        retry_secret_inputs,
+                    )
+                    await unit_of_work.runs.add_secret_inputs(
+                        persisted.run_id,
+                        encrypted_payload,
+                        key_version,
+                        tuple(sorted(retry_secret_inputs)),
+                        now,
+                    )
                 await unit_of_work.runs.append_event(
                     RunEvent(
                         run_event_id=uuid4(),
@@ -716,6 +1003,49 @@ class RunService:
             if await unit_of_work.runs.get(run_id) is None:
                 raise NotFoundError("run not found")
             return await unit_of_work.runs.events_after(run_id, sequence, limit)
+
+    async def consume_secret_inputs(
+        self, run_id: UUID, expected_names: tuple[str, ...]
+    ) -> dict[str, str]:
+        if not expected_names:
+            return {}
+        event = None
+        async with self._unit_of_work_factory() as unit_of_work:
+            record = await unit_of_work.runs.consume_secret_inputs(run_id)
+            if record is None:
+                raise SecretParametersRequiredError(details={"fields": list(expected_names)})
+            encrypted_payload = record.get("encrypted_payload")
+            key_version = record.get("encryption_key_version")
+            parameter_names = record.get("parameter_names")
+            if (
+                not isinstance(encrypted_payload, bytes)
+                or not isinstance(key_version, int)
+                or not isinstance(parameter_names, list)
+                or sorted(str(item) for item in parameter_names) != sorted(expected_names)
+            ):
+                raise RuntimeError("encrypted Run parameter metadata is invalid")
+            values = self._keyring.decrypt_json(
+                "run-parameters",
+                str(run_id),
+                encrypted_payload,
+                key_version,
+            )
+            if set(values) != set(expected_names) or not all(
+                isinstance(value, str) for value in values.values()
+            ):
+                raise RuntimeError("encrypted Run parameters are invalid")
+            event = new_audit_event(
+                AuditAction.RUN_SECRET_INPUT_CONSUMED,
+                AuditOutcome.SUCCEEDED,
+                source=AuditSource.WORKER,
+                run_id=run_id,
+                resource_type="run",
+                resource_id=run_id,
+                metadata={"parameter_names": sorted(expected_names)},
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return {key: str(value) for key, value in values.items()}
 
     async def dashboard(self) -> dict[str, object]:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -961,8 +1291,7 @@ class WorkerCoordinator:
                 error_code=failure_code,
                 exception_type=exception_type,
                 failure_stage=failure_stage or ("run_execution" if failure_code else None),
-                retryable=status
-                in {RunStatus.FAILED, RunStatus.TIMED_OUT, RunStatus.INTERRUPTED},
+                retryable=status in {RunStatus.FAILED, RunStatus.TIMED_OUT, RunStatus.INTERRUPTED},
                 metadata={
                     "return_code": return_code,
                     "summary": summary,

@@ -17,7 +17,7 @@ RUN_COLUMNS = sql.SQL(
     "credential_versions, "
     "timeout_seconds, forks, cancel_requested_at, claimed_by, claimed_at, started_at, "
     "finished_at, return_code, summary, failure_code, failure_message, requested_by, "
-    "idempotency_key, request_fingerprint, created_at, updated_at"
+    "idempotency_key, request_fingerprint, request_fingerprint_scheme, created_at, updated_at"
 )
 QUALIFIED_RUN_COLUMNS = sql.SQL(
     "r.run_id, r.source_run_id, r.kind, r.status, r.target_spec, r.resolved_targets, "
@@ -26,7 +26,7 @@ QUALIFIED_RUN_COLUMNS = sql.SQL(
     "r.timeout_seconds, r.forks, r.cancel_requested_at, r.claimed_by, r.claimed_at, "
     "r.started_at, r.finished_at, r.return_code, r.summary, r.failure_code, "
     "r.failure_message, r.requested_by, r.idempotency_key, r.request_fingerprint, "
-    "r.created_at, r.updated_at"
+    "r.request_fingerprint_scheme, r.created_at, r.updated_at"
 )
 TARGET_COLUMNS = sql.SQL(
     "run_target_id, run_id, host_id, host_name, host_address, status, return_code, "
@@ -98,6 +98,15 @@ class RunRepository(BaseRepository, Protocol):
         self, run_id: UUID, sequence: int, limit: int
     ) -> tuple[RunEvent, ...]: ...
     async def cancellation_requested(self, run_id: UUID) -> bool: ...
+    async def add_secret_inputs(
+        self,
+        run_id: UUID,
+        encrypted_payload: bytes,
+        encryption_key_version: int,
+        parameter_names: tuple[str, ...],
+        created_at: datetime,
+    ) -> None: ...
+    async def consume_secret_inputs(self, run_id: UUID) -> dict[str, object] | None: ...
     async def dashboard(self) -> dict[str, object]: ...
 
 
@@ -119,9 +128,7 @@ class PostgresRunRepository(BaseRepository):
             values[key] = Jsonb(values[key])
         return values
 
-    async def get_by_idempotency_key(
-        self, requested_by: UUID, idempotency_key: str
-    ) -> Run | None:
+    async def get_by_idempotency_key(self, requested_by: UUID, idempotency_key: str) -> Run | None:
         row = await self.connection.fetch_one(
             sql.SQL(
                 "SELECT {} FROM runs WHERE requested_by = %(requested_by)s "
@@ -141,14 +148,16 @@ class PostgresRunRepository(BaseRepository):
                 "cancel_requested_at, claimed_by, "
                 "claimed_at, started_at, finished_at, return_code, summary, failure_code, "
                 "failure_message, requested_by, idempotency_key, request_fingerprint, "
-                "created_at, updated_at) VALUES (%(run_id)s, %(source_run_id)s, %(kind)s, "
+                "request_fingerprint_scheme, created_at, updated_at) VALUES "
+                "(%(run_id)s, %(source_run_id)s, %(kind)s, "
                 "%(status)s, %(target_spec)s, %(resolved_targets)s, %(operation_spec)s, "
                 "%(inventory_snapshot)s, %(workspace_revision)s, %(playbook_id)s, "
                 "%(playbook_revision)s, %(credential_versions)s, "
                 "%(timeout_seconds)s, %(forks)s, %(cancel_requested_at)s, %(claimed_by)s, "
                 "%(claimed_at)s, %(started_at)s, %(finished_at)s, %(return_code)s, "
                 "%(summary)s, %(failure_code)s, %(failure_message)s, %(requested_by)s, "
-                "%(idempotency_key)s, %(request_fingerprint)s, %(created_at)s, %(updated_at)s) "
+                "%(idempotency_key)s, %(request_fingerprint)s, "
+                "%(request_fingerprint_scheme)s, %(created_at)s, %(updated_at)s) "
                 "ON CONFLICT (requested_by, idempotency_key) DO NOTHING RETURNING {}"
             ).format(RUN_COLUMNS),
             self._run_values(run),
@@ -515,6 +524,42 @@ class PostgresRunRepository(BaseRepository):
             prepare=True,
         )
         return bool(row and row["requested"])
+
+    async def add_secret_inputs(
+        self,
+        run_id: UUID,
+        encrypted_payload: bytes,
+        encryption_key_version: int,
+        parameter_names: tuple[str, ...],
+        created_at: datetime,
+    ) -> None:
+        await self.connection.execute(
+            sql.SQL(
+                "INSERT INTO run_secret_inputs (run_id, encrypted_payload, "
+                "encryption_key_version, parameter_names, created_at) VALUES "
+                "(%(run_id)s, %(encrypted_payload)s, %(encryption_key_version)s, "
+                "%(parameter_names)s, %(created_at)s)"
+            ),
+            {
+                "run_id": run_id,
+                "encrypted_payload": encrypted_payload,
+                "encryption_key_version": encryption_key_version,
+                "parameter_names": list(parameter_names),
+                "created_at": created_at,
+            },
+            prepare=True,
+        )
+
+    async def consume_secret_inputs(self, run_id: UUID) -> dict[str, object] | None:
+        row = await self.connection.fetch_one(
+            sql.SQL(
+                "DELETE FROM run_secret_inputs WHERE run_id = %(run_id)s "
+                "RETURNING encrypted_payload, encryption_key_version, parameter_names"
+            ),
+            {"run_id": run_id},
+            prepare=True,
+        )
+        return dict(row) if row is not None else None
 
     async def dashboard(self) -> dict[str, object]:
         row = await self.connection.fetch_one(

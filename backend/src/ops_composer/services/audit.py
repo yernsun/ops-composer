@@ -70,16 +70,12 @@ def new_audit_event(
         event_action=action,
         event_outcome=outcome,
         request_id=(str(context["request_id"]) if "request_id" in context else None),
-        correlation_id=(
-            str(context["correlation_id"]) if "correlation_id" in context else None
-        ),
+        correlation_id=(str(context["correlation_id"]) if "correlation_id" in context else None),
         actor_user_id=actor_user_id or _context_uuid(context, "actor_user_id"),
         session_id=session_id or _context_uuid(context, "session_id"),
         run_id=run_id or _context_uuid(context, "run_id"),
         run_target_id=run_target_id or _context_uuid(context, "run_target_id"),
-        worker_id=worker_id or (
-            str(context["worker_id"]) if "worker_id" in context else None
-        ),
+        worker_id=worker_id or (str(context["worker_id"]) if "worker_id" in context else None),
         resource_type=resource_type,
         resource_id=str(resource_id) if resource_id is not None else None,
         duration_ms=duration_ms,
@@ -121,9 +117,7 @@ class AuditService:
         self._unit_of_work_factory = unit_of_work_factory
 
     @staticmethod
-    async def append_in_transaction(
-        unit_of_work: UnitOfWork, event: AuditEventDraft
-    ) -> AuditEvent:
+    async def append_in_transaction(unit_of_work: UnitOfWork, event: AuditEventDraft) -> AuditEvent:
         return await unit_of_work.audit.append(event)
 
     async def record(self, event: AuditEventDraft) -> AuditEvent:

@@ -12,9 +12,9 @@ from ops_composer.repositories.base import BaseRepository, RepositoryConnection,
 WEB_SHELL_ADMISSION_LOCK_KEY = 718_340_241
 WEB_SHELL_COLUMNS = sql.SQL(
     "web_shell_session_id, host_id, actor_user_id, auth_session_id, credential_id, "
-    "credential_version, host_name, host_address, ssh_port, username, state, api_instance_id, "
-    "owner_id, ticket_expires_at, lease_expires_at, connected_at, last_activity_at, "
-    "close_requested_at, created_at"
+    "credential_version, credential_type, host_name, host_address, ssh_port, username, state, "
+    "api_instance_id, owner_id, ticket_expires_at, lease_expires_at, connected_at, "
+    "last_activity_at, close_requested_at, created_at"
 )
 
 
@@ -102,16 +102,16 @@ class PostgresWebShellRepository(BaseRepository):
         row = await self.connection.fetch_one(
             sql.SQL(
                 "INSERT INTO web_shell_sessions (web_shell_session_id, host_id, actor_user_id, "
-                "auth_session_id, credential_id, credential_version, host_name, host_address, "
-                "ssh_port, username, state, api_instance_id, owner_id, ticket_expires_at, "
-                "lease_expires_at, connected_at, last_activity_at, close_requested_at, "
-                "created_at) VALUES "
+                "auth_session_id, credential_id, credential_version, credential_type, host_name, "
+                "host_address, ssh_port, username, state, api_instance_id, owner_id, "
+                "ticket_expires_at, lease_expires_at, connected_at, last_activity_at, "
+                "close_requested_at, created_at) VALUES "
                 "(%(web_shell_session_id)s, %(host_id)s, %(actor_user_id)s, "
                 "%(auth_session_id)s, %(credential_id)s, %(credential_version)s, "
-                "%(host_name)s, %(host_address)s, %(ssh_port)s, %(username)s, %(state)s, "
-                "%(api_instance_id)s, %(owner_id)s, %(ticket_expires_at)s, "
-                "%(lease_expires_at)s, %(connected_at)s, %(last_activity_at)s, "
-                "%(close_requested_at)s, %(created_at)s) RETURNING {}"
+                "%(credential_type)s, %(host_name)s, %(host_address)s, %(ssh_port)s, "
+                "%(username)s, %(state)s, %(api_instance_id)s, %(owner_id)s, "
+                "%(ticket_expires_at)s, %(lease_expires_at)s, %(connected_at)s, "
+                "%(last_activity_at)s, %(close_requested_at)s, %(created_at)s) RETURNING {}"
             ).format(WEB_SHELL_COLUMNS),
             session.model_dump(mode="python"),
             prepare=True,

@@ -17,6 +17,7 @@ from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     ClaimCollisionError,
     ConflictError,
+    KeyVersionMissingError,
     NotFoundError,
     RunNotCancelableError,
     ValidationError,
@@ -81,12 +82,18 @@ class _AuditRepository:
         return event
 
 
-def _factory(*, assets: object | None = None, runs: object | None = None) -> _Factory:
+def _factory(
+    *,
+    assets: object | None = None,
+    runs: object | None = None,
+    encryption: object | None = None,
+) -> _Factory:
     unit = SimpleNamespace(
         assets=assets or SimpleNamespace(),
         runs=runs or SimpleNamespace(),
         audit=_AuditRepository(),
         health=SimpleNamespace(is_ready=AsyncMock(return_value=True)),
+        encryption=encryption or SimpleNamespace(),
     )
     return _Factory(unit)
 
@@ -189,14 +196,15 @@ def _run(host: ResolvedHost, *, status: RunStatus = RunStatus.QUEUED) -> Run:
 async def test_credential_service_rejects_invalid_inputs_versions_and_missing_rows() -> None:
     repository = SimpleNamespace(
         list_credentials=AsyncMock(return_value=()),
-        get_setting=AsyncMock(return_value={"version": 2, "envelope": "invalid"}),
+        get_setting=AsyncMock(return_value={"version": 1, "envelope": "invalid"}),
         get_credential=AsyncMock(return_value=None),
         get_credential_revision=AsyncMock(return_value=None),
         delete_credential=AsyncMock(return_value=True),
         add_credential=AsyncMock(),
         rotate_credential=AsyncMock(return_value=None),
     )
-    factory = _factory(assets=repository)
+    encryption = SimpleNamespace(list_keys=AsyncMock(return_value=()))
+    factory = _factory(assets=repository, encryption=encryption)
     service = CredentialService(cast(UnitOfWorkFactory, factory), _cipher())
 
     assert await service.list() == ()
@@ -233,7 +241,7 @@ async def test_credential_service_rejects_invalid_inputs_versions_and_missing_ro
         created_at=utc_now(),
     )
     repository.get_credential_revision.return_value = revision
-    with pytest.raises(ValidationError, match="key version"):
+    with pytest.raises(KeyVersionMissingError):
         await service.decrypt_revision(credential.credential_id, 1)
 
     await service.delete(credential.credential_id)

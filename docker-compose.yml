@@ -19,8 +19,10 @@ x-application: &application
     APP_SESSION_COOKIE_SECURE: ${APP_SESSION_COOKIE_SECURE:-true}
     APP_AUTH_RATE_LIMIT_SECRET: ${APP_AUTH_RATE_LIMIT_SECRET:?set at least 32 random bytes}
     FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?set the trusted proxy IP or CIDR}
-    OPS_COMPOSER_MASTER_KEY: ${OPS_COMPOSER_MASTER_KEY:?set a base64-encoded 32-byte key}
+    # Configure either the legacy single key or a keyring file, never both.
+    OPS_COMPOSER_MASTER_KEY: ${OPS_COMPOSER_MASTER_KEY:-}
     OPS_COMPOSER_MASTER_KEY_VERSION: ${OPS_COMPOSER_MASTER_KEY_VERSION:-1}
+    OPS_COMPOSER_MASTER_KEYRING_FILE: ${OPS_COMPOSER_MASTER_KEYRING_FILE:-}
     OPS_COMPOSER_PLAYBOOK_WORKSPACE: /workspace
     OPS_COMPOSER_PLAYBOOK_SOURCE_MODE: ${OPS_COMPOSER_PLAYBOOK_SOURCE_MODE:-both}
     OPS_COMPOSER_RUNTIME_DIR: /var/lib/ops-composer/runtime
@@ -30,6 +32,7 @@ x-application: &application
     OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS: ${OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS:-28800}
   volumes:
     - ${PLAYBOOK_WORKSPACE:-./playbooks}:/workspace:ro
+    - ${MASTER_KEYRING_DIR:-./volumes/keyring}:/run/secrets/ops-composer-keyring:ro
   logging: *default-logging
 
 services:

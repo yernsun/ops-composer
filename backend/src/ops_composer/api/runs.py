@@ -5,13 +5,15 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Query, Request, status
+from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import Field, model_validator
 
 from ops_composer.api.dependencies import UnitOfWorkFactoryDep
 from ops_composer.api.models import StrictApiModel
 from ops_composer.auth.api import CurrentSessionDep, UnsafeSessionDep
+from ops_composer.auth.models import Permission
+from ops_composer.auth.service import require_permission
 from ops_composer.domain.ops import (
     TERMINAL_RUN_STATUSES,
     CommandMode,
@@ -70,6 +72,8 @@ class PlaybookRunRequest(StrictApiModel):
         json_schema_extra={"deprecated": True},
     )
     extra_vars: dict[str, object] = Field(default_factory=dict)
+    parameters: dict[str, object] | None = None
+    check_mode: bool = False
     tags: tuple[str, ...] = ()
     skip_tags: tuple[str, ...] = ()
     timeout_seconds: int = Field(default=1800, ge=1, le=86400)
@@ -79,6 +83,8 @@ class PlaybookRunRequest(StrictApiModel):
     def require_one_playbook_reference(self) -> PlaybookRunRequest:
         if (self.playbook is None) == (self.playbook_path is None):
             raise ValueError("provide exactly one of playbook or playbookPath")
+        if "extra_vars" in self.model_fields_set and self.parameters is not None:
+            raise ValueError("extraVars and parameters cannot be submitted together")
         return self
 
     def reference(self) -> PlaybookReference:
@@ -92,6 +98,27 @@ class PlaybookRunRequest(StrictApiModel):
 class RunDetailResponse(StrictApiModel):
     run: Run
     targets: tuple[RunTarget, ...]
+
+
+class RetryRunRequest(StrictApiModel):
+    parameters: dict[str, object] | None = None
+
+
+class SensitiveParameterPreview(StrictApiModel):
+    name: str
+    supplied: bool
+
+
+class PlaybookRunPreviewResponse(StrictApiModel):
+    target_count: int
+    playbook_source: PlaybookSource
+    revision: int | None
+    digest: str
+    check_mode: bool
+    tags: list[str]
+    skip_tags: list[str]
+    parameter_names: list[str]
+    sensitive_parameters: list[SensitiveParameterPreview]
 
 
 class OverviewResponse(StrictApiModel):
@@ -156,6 +183,7 @@ async def create_command_run(
         shell_confirmed=request.shell_confirmed,
         timeout_seconds=request.timeout_seconds,
         forks=request.forks,
+        actor=principal,
     )
     bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
     return run
@@ -168,10 +196,14 @@ async def create_command_run(
 )
 async def create_playbook_run(
     request: PlaybookRunRequest,
+    response: Response,
     idempotency_key: IdempotencyKey,
     factory: UnitOfWorkFactoryDep,
     principal: UnsafeSessionDep,
 ) -> Run:
+    if request.playbook_path is not None or "extra_vars" in request.model_fields_set:
+        response.headers["Deprecation"] = "true"
+        response.headers["Sunset"] = "Wed, 31 Mar 2027 00:00:00 GMT"
     run = await _service(factory).create_playbook(
         requested_by=principal.user_id,
         idempotency_key=idempotency_key,
@@ -180,13 +212,44 @@ async def create_playbook_run(
         group_id=request.target.group_id,
         playbook=request.reference(),
         extra_vars=request.extra_vars,
+        parameters=request.parameters,
+        check_mode=request.check_mode,
         tags=request.tags,
         skip_tags=request.skip_tags,
         timeout_seconds=request.timeout_seconds,
         forks=request.forks,
+        actor=principal,
     )
     bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
     return run
+
+
+@router.post(
+    "/runs/playbooks/preview",
+    operation_id="previewPlaybookRun",
+)
+async def preview_playbook_run(
+    request: PlaybookRunRequest,
+    response: Response,
+    factory: UnitOfWorkFactoryDep,
+    principal: UnsafeSessionDep,
+) -> PlaybookRunPreviewResponse:
+    if request.playbook_path is not None or "extra_vars" in request.model_fields_set:
+        response.headers["Deprecation"] = "true"
+        response.headers["Sunset"] = "Wed, 31 Mar 2027 00:00:00 GMT"
+    values = request.parameters if request.parameters is not None else request.extra_vars
+    result = await _service(factory).preview_playbook(
+        actor=principal,
+        target_kind=request.target.kind,
+        host_ids=request.target.host_ids,
+        group_id=request.target.group_id,
+        playbook=request.reference(),
+        parameters=values,
+        check_mode=request.check_mode,
+        tags=request.tags,
+        skip_tags=request.skip_tags,
+    )
+    return PlaybookRunPreviewResponse.model_validate(result)
 
 
 @router.post(
@@ -204,6 +267,7 @@ async def test_host(
         requested_by=principal.user_id,
         idempotency_key=idempotency_key,
         host_id=host_id,
+        actor=principal,
     )
     bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
     return run
@@ -216,7 +280,12 @@ async def cancel_run(
     principal: UnsafeSessionDep,
 ) -> Run:
     bind_log_context(run_id=run_id, correlation_id=str(run_id))
-    return await _service(factory).cancel(run_id, requested_by=principal.user_id)
+    require_permission(principal, Permission.RUN_CANCEL)
+    return await _service(factory).cancel(
+        run_id,
+        requested_by=principal.user_id,
+        actor=principal,
+    )
 
 
 @router.post(
@@ -229,10 +298,15 @@ async def retry_run(
     idempotency_key: IdempotencyKey,
     factory: UnitOfWorkFactoryDep,
     principal: UnsafeSessionDep,
+    request: RetryRunRequest | None = None,
 ) -> Run:
     bind_log_context(run_id=run_id, correlation_id=str(run_id))
     run = await _service(factory).retry(
-        run_id, requested_by=principal.user_id, idempotency_key=idempotency_key
+        run_id,
+        requested_by=principal.user_id,
+        idempotency_key=idempotency_key,
+        actor=principal,
+        parameters=request.parameters if request is not None else None,
     )
     bind_log_context(run_id=run.run_id, correlation_id=str(run.run_id))
     return run

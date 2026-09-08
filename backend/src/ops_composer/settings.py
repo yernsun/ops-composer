@@ -45,7 +45,12 @@ class PlaybookSourceMode(StrEnum):
 class Settings(BaseSettings):
     """Validated process configuration shared by the API, CLI, and worker."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_ignore_empty=True,
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     app_env: AppEnvironment = Field(default=AppEnvironment.DEVELOPMENT, validation_alias="APP_ENV")
     log_level: AppLogLevel = Field(default=AppLogLevel.INFO, validation_alias="APP_LOG_LEVEL")
@@ -87,6 +92,9 @@ class Settings(BaseSettings):
     )
     master_key_version: int = Field(
         default=1, ge=1, validation_alias="OPS_COMPOSER_MASTER_KEY_VERSION"
+    )
+    master_keyring_file: Path | None = Field(
+        default=None, validation_alias="OPS_COMPOSER_MASTER_KEYRING_FILE"
     )
     playbook_workspace: Path = Field(
         default=Path("/workspace"), validation_alias="OPS_COMPOSER_PLAYBOOK_WORKSPACE"
@@ -169,6 +177,19 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def require_unambiguous_master_key_source(self) -> Settings:
+        if (
+            self.master_keyring_file is not None
+            and "master_key" in self.model_fields_set
+            and self.master_key.get_secret_value().strip()
+        ):
+            raise ValueError(
+                "OPS_COMPOSER_MASTER_KEYRING_FILE cannot be combined with legacy "
+                "OPS_COMPOSER_MASTER_KEY"
+            )
+        return self
+
+    @model_validator(mode="after")
     def require_safe_production_settings(self) -> Settings:
         if self.app_env is not AppEnvironment.PRODUCTION:
             return self
@@ -187,8 +208,14 @@ class Settings(BaseSettings):
             or len(rate_limit_secret.encode()) < 32
         ):
             raise ValueError("production requires a unique 32-byte auth rate-limit secret")
-        if self.master_key.get_secret_value() == DEVELOPMENT_MASTER_KEY:
-            raise ValueError("production requires an explicit OPS_COMPOSER_MASTER_KEY")
+        if self.master_keyring_file is None and self.master_key.get_secret_value() in {
+            "",
+            DEVELOPMENT_MASTER_KEY,
+        }:
+            raise ValueError(
+                "production requires OPS_COMPOSER_MASTER_KEYRING_FILE or an explicit "
+                "OPS_COMPOSER_MASTER_KEY"
+            )
         if not self.forwarded_allow_ips:
             raise ValueError("production requires explicit trusted proxy IPs or CIDRs")
         return self
@@ -269,7 +296,7 @@ class Settings(BaseSettings):
                 "max_duration_seconds": self.web_shell_max_duration_seconds,
             },
             "authentication": {
-                "mode": "single-administrator",
+                "mode": "multi-administrator-rbac",
                 "allowed_origins": sorted(self.allowed_origins),
                 "cookies_secure": self.cookies_secure,
                 "session_ttl_seconds": self.session_ttl_seconds,
@@ -278,8 +305,10 @@ class Settings(BaseSettings):
                     self.auth_rate_limit_secret.get_secret_value() != DEVELOPMENT_RATE_LIMIT_SECRET
                     and len(self.auth_rate_limit_secret.get_secret_value().encode()) >= 32
                 ),
-                "master_key_configured": (
-                    self.master_key.get_secret_value() != DEVELOPMENT_MASTER_KEY
+                "master_key_configured": self.master_keyring_file is not None
+                or self.master_key.get_secret_value() not in {"", DEVELOPMENT_MASTER_KEY},
+                "master_key_source": (
+                    "keyring-file" if self.master_keyring_file is not None else "legacy-env"
                 ),
             },
         }
@@ -292,6 +321,11 @@ class Settings(BaseSettings):
     @property
     def csrf_cookie_name(self) -> str:
         prefix = f"{COOKIE_PREFIX}-csrf"
+        return f"__Host-{prefix}" if self.app_env is AppEnvironment.PRODUCTION else prefix
+
+    @property
+    def auth_challenge_cookie_name(self) -> str:
+        prefix = f"{COOKIE_PREFIX}-auth-challenge"
         return f"__Host-{prefix}" if self.app_env is AppEnvironment.PRODUCTION else prefix
 
 

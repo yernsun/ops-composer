@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import importlib.metadata
 import stat
+from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 
+from ops_composer.auth.models import SessionPrincipal
 from ops_composer.domain.audit import AuditAction, AuditEventDraft
 from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     PlaybookInvalidError,
     PlaybookNotFoundError,
+    PlaybookProjectInvalidError,
     PlaybookSourceDisabledError,
     PlaybookVersionConflictError,
+    ValidationError,
 )
 from ops_composer.domain.ops import (
     DatabasePlaybook,
@@ -23,10 +30,13 @@ from ops_composer.domain.ops import (
     Playbook,
     PlaybookReference,
     PlaybookRevision,
+    PlaybookRevisionFormat,
     PlaybookSource,
 )
+from ops_composer.services.playbook_project import normalize_project, validate_parameter_schema
 from ops_composer.services.playbooks import (
     MAX_PLAYBOOK_BYTES,
+    PlaybookCatalog,
     PlaybookService,
     PlaybookValidationResult,
     PlaybookValidator,
@@ -35,6 +45,16 @@ from ops_composer.settings import Settings
 from ops_composer.uow.factory import UnitOfWorkFactory
 
 VALID_YAML = "---\n- name: Check\n  hosts: all\n  gather_facts: false\n  tasks: []\n"
+
+
+def _owner() -> SessionPrincipal:
+    return SessionPrincipal(
+        session_id=uuid4(),
+        user_id=uuid4(),
+        username="owner",
+        csrf_hash="c" * 64,
+        expires_at=utc_now() + timedelta(hours=1),
+    )
 
 
 def test_playbook_reference_requires_exactly_one_source_identifier() -> None:
@@ -96,6 +116,8 @@ class _PlaybookRepository:
         self.catalog = catalog
         self.documents: dict[UUID, DatabasePlaybookDocument] = {}
         self.revisions: dict[tuple[UUID, int], PlaybookRevision] = {}
+        self.force_update_conflict = False
+        self.force_delete_conflict = False
 
     async def list_active(self) -> tuple[Playbook, ...]:
         return self.catalog
@@ -120,6 +142,15 @@ class _PlaybookRepository:
     ) -> PlaybookRevision | None:
         return self.revisions.get((playbook_id, revision))
 
+    async def list_revisions(self, playbook_id: UUID) -> tuple[PlaybookRevision, ...]:
+        return tuple(
+            revision
+            for (current_id, _number), revision in sorted(
+                self.revisions.items(), key=lambda item: item[0][1], reverse=True
+            )
+            if current_id == playbook_id
+        )
+
     async def add(
         self, playbook: DatabasePlaybook, revision: PlaybookRevision
     ) -> DatabasePlaybookDocument:
@@ -136,7 +167,11 @@ class _PlaybookRepository:
         expected_version: int,
     ) -> DatabasePlaybookDocument | None:
         current = self.documents.get(playbook.playbook_id)
-        if current is None or current.playbook.version != expected_version:
+        if (
+            self.force_update_conflict
+            or current is None
+            or current.playbook.version != expected_version
+        ):
             return None
         document = DatabasePlaybookDocument(playbook=playbook, revision=revision)
         self.documents[playbook.playbook_id] = document
@@ -152,7 +187,11 @@ class _PlaybookRepository:
         updated_by: UUID,
     ) -> DatabasePlaybook | None:
         current = self.documents.get(playbook_id)
-        if current is None or current.playbook.version != expected_version:
+        if (
+            self.force_delete_conflict
+            or current is None
+            or current.playbook.version != expected_version
+        ):
             return None
         playbook = current.playbook.model_copy(
             update={
@@ -221,6 +260,26 @@ class _Validator:
             sha256=hashlib.sha256(encoded).hexdigest(),
             size_bytes=len(encoded),
             validator_version=self.version,
+        )
+
+    async def validate_project(
+        self,
+        files: dict[str, str],
+        entrypoint: str,
+        parameter_schema: dict[str, object] | None,
+        supports_check_mode: bool,
+    ) -> PlaybookValidationResult:
+        project = normalize_project(files, entrypoint)
+        return PlaybookValidationResult(
+            valid=True,
+            output="syntax check passed",
+            sha256=project.sha256,
+            size_bytes=project.size_bytes,
+            validator_version=self.version,
+            normalized_files=project.files,
+            entrypoint=project.entrypoint,
+            parameter_schema=validate_parameter_schema(parameter_schema),
+            supports_check_mode=supports_check_mode,
         )
 
 
@@ -384,3 +443,318 @@ async def test_playbook_source_modes_are_independent_and_allow_same_display_name
         (PlaybookSource.DATABASE, database.playbook_id, None),
         (PlaybookSource.MOUNT, None, mounted.path),
     }
+
+
+@pytest.mark.asyncio
+async def test_playbook_validator_reports_missing_binary_timeout_and_read_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def missing_distribution(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(importlib.metadata, "version", missing_distribution)
+    validator = PlaybookValidator()
+    assert validator.version == "ansible-core unavailable"
+    assert validator._validate_document("bad: [") == "playbook YAML is invalid"
+
+    monkeypatch.setattr("ops_composer.services.playbooks.shutil.which", lambda _name: None)
+    with pytest.raises(ValidationError, match="not installed"):
+        await validator._syntax_check(tmp_path / "site.yml", cwd=tmp_path)
+
+    monkeypatch.setattr(
+        "ops_composer.services.playbooks.shutil.which",
+        lambda _name: "/usr/bin/ansible-playbook",
+    )
+
+    async def missing_exec(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", missing_exec)
+    with pytest.raises(ValidationError, match="not installed"):
+        await validator._syntax_check(tmp_path / "site.yml", cwd=tmp_path)
+
+    class _TimedOutProcess:
+        returncode = None
+        killed = False
+
+        async def communicate(self) -> tuple[bytes, None]:
+            return b"never returned", None
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = _TimedOutProcess()
+
+    async def create_process(*_args: object, **_kwargs: object) -> _TimedOutProcess:
+        return process
+
+    async def timeout(awaitable: object, *, timeout: int) -> object:
+        assert timeout == 30
+        cast(Any, awaitable).close()
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr(asyncio, "wait_for", timeout)
+    assert await validator._syntax_check(tmp_path / "site.yml", cwd=tmp_path) == (
+        False,
+        "syntax check timed out",
+    )
+    assert process.killed
+
+    missing = await validator.validate_path(tmp_path / "missing.yml", workspace=tmp_path)
+    assert not missing.valid and "could not be read" in missing.output
+    invalid_path = tmp_path / "invalid.yml"
+    invalid_path.write_text("key: value\n", encoding="utf-8")
+    invalid = await validator.validate_path(invalid_path, workspace=tmp_path)
+    assert not invalid.valid and "root must be" in invalid.output
+
+    project_invalid = await validator.validate_project(
+        {"site.yml": "key: value\n"},
+        "site.yml",
+        None,
+        False,
+    )
+    assert not project_invalid.valid
+
+
+@pytest.mark.asyncio
+async def test_playbook_catalog_lazy_paths_and_invalid_documents(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    catalog = PlaybookCatalog(tmp_path)
+    assert catalog.workspace == tmp_path.resolve()
+    assert await catalog.list() == ()
+    with pytest.raises(PlaybookNotFoundError):
+        catalog.resolve("playbooks/missing.yml")
+
+    playbooks = tmp_path / "playbooks"
+    playbooks.mkdir()
+    broken = playbooks / "broken.yml"
+    broken.write_text("bad: [", encoding="utf-8")
+    with pytest.raises(PlaybookInvalidError, match="YAML"):
+        await catalog.get("playbooks/broken.yml")
+
+    good = playbooks / "good.yml"
+    good.write_text(VALID_YAML, encoding="utf-8")
+    validator = AsyncMock(return_value=PlaybookValidationResult(valid=True, output="ok"))
+    monkeypatch.setattr(catalog._validator, "validate_path", validator)
+    assert await catalog.syntax_check("playbooks/good.yml") == (True, "ok")
+
+
+@pytest.mark.asyncio
+async def test_playbook_service_rejects_invalid_mutations_and_records_validation() -> None:
+    repository = _PlaybookRepository()
+    audit = _AuditRepository()
+    factory = _Factory(_Unit(repository, audit))
+    validator = _Validator()
+    service = PlaybookService(
+        cast(UnitOfWorkFactory, factory),
+        Settings(playbook_source_mode="database"),
+        validator=cast(Any, validator),
+    )
+    owner = _owner()
+
+    with pytest.raises(PlaybookNotFoundError):
+        await service.get_database(uuid4())
+    with pytest.raises(PlaybookNotFoundError):
+        await service.get_revision(uuid4(), 1)
+    with pytest.raises(PlaybookNotFoundError):
+        await service.list_revisions(uuid4())
+    for values in (
+        {"name": " ", "content": VALID_YAML},
+        {"name": "Site"},
+        {"name": "Site", "content": VALID_YAML, "files": {"site.yml": VALID_YAML}},
+        {"name": "Site", "files": {"site.yml": VALID_YAML}},
+    ):
+        with pytest.raises(PlaybookInvalidError):
+            await service.create_database(
+                actor_user_id=owner.user_id,
+                description="",
+                enabled=True,
+                actor=owner,
+                **values,
+            )
+
+    with pytest.raises(PlaybookInvalidError):
+        await service.create_database(
+            actor_user_id=owner.user_id,
+            name="invalid",
+            description="",
+            enabled=True,
+            content="invalid",
+            actor=owner,
+        )
+
+    project = await service.create_database(
+        actor_user_id=owner.user_id,
+        name="Project",
+        description="",
+        enabled=True,
+        files={"site.yml": VALID_YAML},
+        entrypoint="site.yml",
+        supports_check_mode=True,
+        actor=owner,
+    )
+    assert project.revision.revision_format is PlaybookRevisionFormat.PROJECT
+    assert (await service.list_revisions(project.playbook.playbook_id))[0].revision == 1
+
+    for values in (
+        {"name": " ", "content": VALID_YAML},
+        {"name": "Project"},
+        {
+            "name": "Project",
+            "content": VALID_YAML,
+            "files": {"site.yml": VALID_YAML},
+        },
+        {"name": "Project", "files": {"site.yml": VALID_YAML}},
+    ):
+        with pytest.raises(PlaybookInvalidError):
+            await service.update_database(
+                project.playbook.playbook_id,
+                actor_user_id=owner.user_id,
+                expected_version=project.playbook.version,
+                description="",
+                enabled=True,
+                actor=owner,
+                **values,
+            )
+
+    repository.force_update_conflict = True
+    with pytest.raises(PlaybookVersionConflictError):
+        await service.update_database(
+            project.playbook.playbook_id,
+            actor_user_id=owner.user_id,
+            expected_version=project.playbook.version,
+            name="Project",
+            description="",
+            enabled=True,
+            files={"site.yml": VALID_YAML},
+            entrypoint="site.yml",
+            actor=owner,
+        )
+    repository.force_update_conflict = False
+
+    assert (
+        await service.validate_content(
+            VALID_YAML, actor_user_id=owner.user_id, actor=owner
+        )
+    ).valid
+    assert (
+        await service.validate_project(
+            files={"site.yml": VALID_YAML},
+            entrypoint="site.yml",
+            parameter_schema=None,
+            supports_check_mode=False,
+            actor_user_id=owner.user_id,
+            actor=owner,
+        )
+    ).valid
+
+    raised_validator = SimpleNamespace(
+        validate_content=AsyncMock(side_effect=PlaybookInvalidError()),
+        validate_project=AsyncMock(side_effect=PlaybookProjectInvalidError()),
+    )
+    raised_service = PlaybookService(
+        cast(UnitOfWorkFactory, factory),
+        Settings(playbook_source_mode="database"),
+        validator=cast(Any, raised_validator),
+    )
+    with pytest.raises(PlaybookInvalidError):
+        await raised_service.validate_content("bad", actor_user_id=owner.user_id)
+    with pytest.raises(PlaybookProjectInvalidError):
+        await raised_service.import_zip(b"not-a-zip", entrypoint=None, actor_user_id=owner.user_id)
+
+    repository.force_delete_conflict = True
+    with pytest.raises(PlaybookVersionConflictError):
+        await service.delete_database(
+            project.playbook.playbook_id,
+            actor_user_id=owner.user_id,
+            expected_version=project.playbook.version,
+            actor=owner,
+        )
+    repository.force_delete_conflict = False
+    with pytest.raises(PlaybookVersionConflictError):
+        await service.delete_database(
+            project.playbook.playbook_id,
+            actor_user_id=owner.user_id,
+            expected_version=999,
+            actor=owner,
+        )
+
+
+@pytest.mark.asyncio
+async def test_playbook_reference_validation_and_large_diffs_are_bounded() -> None:
+    repository = _PlaybookRepository()
+    audit = _AuditRepository()
+    factory = _Factory(_Unit(repository, audit))
+    mounted = Playbook(
+        source=PlaybookSource.MOUNT,
+        path="playbooks/site.yml",
+        name="Site",
+        size=10,
+        modified_at=utc_now(),
+        sha256="a" * 64,
+    )
+    service = PlaybookService(
+        cast(UnitOfWorkFactory, factory),
+        Settings(playbook_source_mode="both"),
+        mounted_catalog=cast(Any, _MountedCatalog(mounted)),
+        validator=cast(Any, _Validator()),
+    )
+    actor_id = uuid4()
+    mounted_result = await service.validate_reference(
+        PlaybookReference(source=PlaybookSource.MOUNT, path=mounted.path),
+        actor_user_id=actor_id,
+    )
+    assert mounted_result.valid
+    with pytest.raises(PlaybookNotFoundError):
+        await service.validate_reference(
+            PlaybookReference.model_construct(source=PlaybookSource.MOUNT, path=None),
+            actor_user_id=actor_id,
+        )
+    with pytest.raises(PlaybookNotFoundError):
+        await service.validate_reference(
+            PlaybookReference.model_construct(source=PlaybookSource.DATABASE, playbook_id=None),
+            actor_user_id=actor_id,
+        )
+
+    legacy = await service.create_database(
+        actor_user_id=actor_id,
+        name="Legacy",
+        description="",
+        enabled=True,
+        content=VALID_YAML,
+    )
+    assert (
+        await service.validate_reference(
+            PlaybookReference(
+                source=PlaybookSource.DATABASE,
+                playbook_id=legacy.playbook.playbook_id,
+            ),
+            actor_user_id=actor_id,
+        )
+    ).valid
+
+    old_content = "".join(f"old-{index}-" + "a" * 5000 + "\n" for index in range(40))
+    new_content = "".join(f"new-{index}-" + "b" * 5000 + "\n" for index in range(40))
+    first = normalize_project({"site.yml": old_content}, "site.yml")
+    second = normalize_project({"site.yml": new_content}, "site.yml")
+    now = utc_now()
+    for number, normalized in ((1, first), (2, second)):
+        repository.revisions[(legacy.playbook.playbook_id, number)] = PlaybookRevision(
+            playbook_id=legacy.playbook.playbook_id,
+            revision=number,
+            sha256=normalized.sha256,
+            size_bytes=normalized.size_bytes,
+            validator_version="test",
+            validated_at=now,
+            created_by=actor_id,
+            created_at=now,
+            revision_format=PlaybookRevisionFormat.PROJECT,
+            entrypoint="site.yml",
+            files=normalized.files,
+        )
+    diff = await service.diff_revisions(legacy.playbook.playbook_id, 2, 1)
+    assert str(diff["diff"]).endswith("... diff truncated ...\n")

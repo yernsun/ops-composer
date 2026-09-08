@@ -12,6 +12,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from ops_composer.api.assets import router as assets_router
+from ops_composer.api.audit import router as audit_router
 from ops_composer.api.errors import install_error_handlers
 from ops_composer.api.health import router as health_router
 from ops_composer.api.observability import RequestContextMiddleware, configure_logging
@@ -32,7 +33,7 @@ from ops_composer.domain.audit import (
 from ops_composer.observability import log_event, safe_exception_fields
 from ops_composer.services.assets import CredentialService
 from ops_composer.services.audit import AuditService, new_audit_event
-from ops_composer.services.crypto import CredentialCipher
+from ops_composer.services.crypto import CredentialCipher, build_master_keyring
 from ops_composer.settings import get_settings
 from ops_composer.uow.factory import UnitOfWorkFactory
 from ops_composer.web_shell_manager import WebShellManager
@@ -102,9 +103,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             raise
         factory = UnitOfWorkFactory(pool)
         audit_service = AuditService(factory)
-        cipher = CredentialCipher(
-            settings.master_key.get_secret_value(), settings.master_key_version
+        keyring = build_master_keyring(
+            keyring_file=settings.master_keyring_file,
+            fallback_key=settings.master_key.get_secret_value(),
+            fallback_version=settings.master_key_version,
         )
+        cipher = CredentialCipher(keyring)
         try:
             await CredentialService(factory, cipher).ensure_master_key()
         except Exception as error:
@@ -193,6 +197,7 @@ def create_app() -> FastAPI:
     application.include_router(runs_router)
     application.include_router(system_router)
     application.include_router(web_shell_router)
+    application.include_router(audit_router)
     install_error_handlers(application)
     static_dir = Path(settings.static_dir)
     if (static_dir / "index.html").is_file():

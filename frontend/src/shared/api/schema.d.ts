@@ -4,6 +4,57 @@
  */
 
 export interface paths {
+    "/api/v1/audit-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Audit Events */
+        get: operations["listAuditEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit-events/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Audit Events */
+        get: operations["exportAuditEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate */
+        post: operations["activateUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -32,6 +83,125 @@ export interface paths {
         put?: never;
         /** Logout */
         post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mfa/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Begin Mfa Enrollment */
+        post: operations["beginMfaEnrollment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mfa/enroll/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Mfa Enrollment */
+        post: operations["confirmMfaEnrollment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/mfa/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify Mfa */
+        post: operations["verifyMfa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change Own Password */
+        post: operations["changeOwnPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/reauthenticate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reauthenticate */
+        post: operations["reauthenticate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/recovery-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Regenerate Recovery Codes */
+        post: operations["regenerateRecoveryCodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/security": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Security Status */
+        get: operations["getSecurityStatus"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -82,7 +252,8 @@ export interface paths {
         };
         /** Get Credential */
         get: operations["getCredential"];
-        put?: never;
+        /** Update Credential */
+        put: operations["updateCredential"];
         post?: never;
         /** Delete Credential */
         delete: operations["deleteCredential"];
@@ -98,7 +269,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Credential Revisions */
+        get: operations["listCredentialRevisions"];
         put?: never;
         /** Rotate Credential */
         post: operations["rotateCredential"];
@@ -385,6 +557,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/playbooks/database/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Playbook Project Zip */
+        post: operations["importPlaybookProjectZip"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/playbooks/database/{playbook_id}": {
         parameters: {
             query?: never;
@@ -399,6 +588,91 @@ export interface paths {
         post?: never;
         /** Delete Database Playbook */
         delete: operations["deleteDatabasePlaybook"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playbooks/database/{playbook_id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Playbook Revisions */
+        get: operations["listPlaybookRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playbooks/database/{playbook_id}/revisions/{revision}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Playbook Revision */
+        get: operations["getPlaybookRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playbooks/database/{playbook_id}/revisions/{revision}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Diff Playbook Revisions */
+        get: operations["diffPlaybookRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playbooks/database/{playbook_id}/revisions/{revision}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Playbook Project Zip */
+        get: operations["exportPlaybookProjectZip"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playbooks/database/{playbook_id}/revisions/{revision}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Playbook Revision */
+        post: operations["restorePlaybookRevision"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -483,6 +757,23 @@ export interface paths {
         put?: never;
         /** Create Playbook Run */
         post: operations["createPlaybookRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/playbooks/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Playbook Run */
+        post: operations["previewPlaybookRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -608,6 +899,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/keyring": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Keyring Status */
+        get: operations["getKeyringStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/keyring/rotations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Key Rotation */
+        post: operations["requestKeyRotation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Users */
+        get: operations["listUsers"];
+        put?: never;
+        /** Create User */
+        post: operations["createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update User */
+        put: operations["updateUser"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{user_id}/activation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reissue User Activation */
+        post: operations["reissueUserActivation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{user_id}/mfa/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset User Mfa */
+        post: operations["resetUserMfa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/web-shell-sessions/{web_shell_session_id}": {
         parameters: {
             query?: never;
@@ -663,6 +1057,137 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActivationRequest */
+        ActivationRequest: {
+            /**
+             * Activationcode
+             * Format: password
+             */
+            activationCode: string;
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+        };
+        /**
+         * AuditAction
+         * @enum {string}
+         */
+        AuditAction: "REQUEST_COMPLETED" | "REQUEST_REJECTED" | "REQUEST_VALIDATION_FAILED" | "UNHANDLED_EXCEPTION" | "APP_STARTING" | "APP_READY" | "APP_STOPPED" | "DATABASE_UNAVAILABLE" | "DATABASE_RECOVERED" | "MIGRATION_STARTED" | "MIGRATION_COMPLETED" | "MIGRATION_FAILED" | "MIGRATION_VALIDATION_FAILED" | "MASTER_KEY_INITIALIZED" | "MASTER_KEY_VALIDATED" | "MASTER_KEY_VALIDATION_FAILED" | "PLAYBOOK_WORKSPACE_FAILED" | "RUNTIME_DIRECTORY_FAILED" | "AUDIT_PERSIST_FAILED" | "AUDIT_EXPORTED" | "AUDIT_RETENTION_PURGED" | "ADMIN_BOOTSTRAPPED" | "ADMIN_BOOTSTRAP_REJECTED" | "AUTH_LOGIN_SUCCEEDED" | "AUTH_LOGIN_FAILED" | "AUTH_RATE_LIMITED" | "AUTH_SESSION_INVALID" | "AUTH_LOGOUT_SUCCEEDED" | "ORIGIN_DENIED" | "CSRF_DENIED" | "AUTH_PURGE_COMPLETED" | "USER_CREATED" | "USER_ACTIVATED" | "USER_UPDATED" | "USER_ROLE_CHANGED" | "USER_DISABLED" | "USER_ACTIVATION_REISSUED" | "USER_SESSIONS_REVOKED" | "USER_MFA_ENROLLMENT_STARTED" | "USER_MFA_ENROLLMENT_SUCCEEDED" | "USER_MFA_RESET" | "USER_MFA_BREAK_GLASS" | "USER_RECOVERY_CODES_REGENERATED" | "USER_PASSWORD_CHANGED" | "AUTH_MFA_SUCCEEDED" | "AUTH_MFA_FAILED" | "AUTH_RECOVERY_USED" | "AUTH_REAUTH_SUCCEEDED" | "AUTH_REAUTH_FAILED" | "AUTH_PERMISSION_DENIED" | "CREDENTIAL_CREATED" | "CREDENTIAL_ROTATED" | "CREDENTIAL_DELETED" | "CREDENTIAL_UPDATED" | "CREDENTIAL_ENABLED" | "CREDENTIAL_DISABLED" | "MASTER_KEY_REGISTERED" | "MASTER_KEY_ROTATION_REQUESTED" | "MASTER_KEY_ROTATION_STARTED" | "MASTER_KEY_ROTATION_BATCH_COMPLETED" | "MASTER_KEY_ROTATION_SUCCEEDED" | "MASTER_KEY_ROTATION_FAILED" | "HOST_CREATED" | "HOST_UPDATED" | "HOST_DELETED" | "GROUP_CREATED" | "GROUP_UPDATED" | "GROUP_DELETED" | "HOST_KEY_SCAN_STARTED" | "HOST_KEY_SCAN_SUCCEEDED" | "HOST_KEY_SCAN_FAILED" | "HOST_KEY_CONFIRMED" | "HOST_KEY_CHANGED" | "RUN_CREATED" | "RUN_IDEMPOTENT_REPLAY" | "RUN_IDEMPOTENCY_CONFLICT" | "RUN_TARGET_RESOLUTION_FAILED" | "RUN_CANCEL_REQUESTED" | "RUN_CANCEL_REJECTED" | "RUN_RETRY_CREATED" | "WORKER_STARTED" | "WORKER_READY" | "WORKER_STOPPED" | "WORKER_LOOP_FAILED" | "STALE_RUNS_RECOVERED" | "RUN_CLAIMED" | "HOST_LOCK_COLLISION" | "RUN_PREPARATION_FAILED" | "RUNTIME_DIRECTORY_CREATED" | "RUNTIME_DIRECTORY_CLEANED" | "RUN_STARTED" | "HOST_COMPLETED" | "RUN_SUCCEEDED" | "RUN_PARTIAL" | "RUN_FAILED" | "RUN_REJECTED" | "RUN_CANCELED" | "RUN_TIMED_OUT" | "RUN_INTERRUPTED" | "PLAYBOOK_CREATED" | "PLAYBOOK_UPDATED" | "PLAYBOOK_DELETED" | "PLAYBOOK_VALIDATION_SUCCEEDED" | "PLAYBOOK_VALIDATION_FAILED" | "PLAYBOOK_SOURCE_DISABLED" | "PLAYBOOK_IMPORTED" | "PLAYBOOK_EXPORTED" | "PLAYBOOK_REVISION_RESTORED" | "PLAYBOOK_PREVIEWED" | "RUN_SECRET_INPUT_CONSUMED" | "WEB_SHELL_REQUESTED" | "WEB_SHELL_STARTED" | "WEB_SHELL_CLOSE_REQUESTED" | "WEB_SHELL_CLOSED" | "WEB_SHELL_DENIED" | "WEB_SHELL_FAILED" | "WEB_SHELL_TIMED_OUT" | "WEB_SHELL_STALE_RECOVERED";
+        /** AuditEventResponse */
+        AuditEventResponse: {
+            /** Actoruserid */
+            actorUserId: string | null;
+            /** Auditeventid */
+            auditEventId: number;
+            /** Correlationid */
+            correlationId: string | null;
+            /** Durationms */
+            durationMs: number | null;
+            /** Errorcode */
+            errorCode: string | null;
+            eventAction: components["schemas"]["AuditAction"];
+            eventOutcome: components["schemas"]["AuditOutcome"];
+            /** Exceptiontype */
+            exceptionType: string | null;
+            /** Failurestage */
+            failureStage: string | null;
+            /** Metadata */
+            metadata: {
+                [key: string]: unknown;
+            };
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Requestid */
+            requestId: string | null;
+            /** Resourceid */
+            resourceId: string | null;
+            /** Resourcetype */
+            resourceType: string | null;
+            /** Retryable */
+            retryable: boolean | null;
+            /** Runid */
+            runId: string | null;
+            /** Runtargetid */
+            runTargetId: string | null;
+            /** Schemaversion */
+            schemaVersion: number;
+            /** Service */
+            service: string;
+            /** Sessionid */
+            sessionId: string | null;
+            severity: components["schemas"]["AuditSeverity"];
+            source: components["schemas"]["AuditSource"];
+            /** Workerid */
+            workerId: string | null;
+        };
+        /**
+         * AuditOutcome
+         * @enum {string}
+         */
+        AuditOutcome: "STARTED" | "SUCCEEDED" | "FAILED" | "DENIED" | "NOOP";
+        /** AuditPageResponse */
+        AuditPageResponse: {
+            /** Items */
+            items: components["schemas"]["AuditEventResponse"][];
+            /** Nextcursor */
+            nextCursor: number | null;
+        };
+        /**
+         * AuditSeverity
+         * @enum {string}
+         */
+        AuditSeverity: "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+        /**
+         * AuditSource
+         * @enum {string}
+         */
+        AuditSource: "API" | "WORKER" | "CLI" | "SYSTEM";
+        /** AuthChallengeResponse */
+        AuthChallengeResponse: {
+            /** Enrollmentsecret */
+            enrollmentSecret?: string | null;
+            /**
+             * Expiresat
+             * Format: date-time
+             */
+            expiresAt: string;
+            /**
+             * Nextstep
+             * @enum {string}
+             */
+            nextStep: "LOGIN_MFA" | "MFA_ENROLLMENT";
+            /** Otpauthuri */
+            otpauthUri?: string | null;
+            /** Username */
+            username: string;
+        };
+        /** Body_importPlaybookProjectZip */
+        Body_importPlaybookProjectZip: {
+            /** Entrypoint */
+            entrypoint?: string | null;
+            /** File */
+            file: string;
+        };
+        /** ChangePasswordRequest */
+        ChangePasswordRequest: {
+            /**
+             * Currentpassword
+             * Format: password
+             */
+            currentPassword: string;
+            /** Mfavalue */
+            mfaValue?: string | null;
+            /**
+             * Newpassword
+             * Format: password
+             */
+            newPassword: string;
+        };
         /**
          * CommandMode
          * @enum {string}
@@ -696,6 +1221,23 @@ export interface components {
              */
             timeoutSeconds: number;
         };
+        /** CreateUserRequest */
+        CreateUserRequest: {
+            role: components["schemas"]["UserRole"];
+            /** Username */
+            username: string;
+        };
+        /** CreatedUserResponse */
+        CreatedUserResponse: {
+            /** Activationcode */
+            activationCode: string;
+            /**
+             * Activationexpiresat
+             * Format: date-time
+             */
+            activationExpiresAt: string;
+            user: components["schemas"]["UserResponse"];
+        };
         /** Credential */
         Credential: {
             /**
@@ -717,6 +1259,11 @@ export interface components {
             description: string;
             /** Enabled */
             enabled: boolean;
+            /**
+             * Lockversion
+             * @default 1
+             */
+            lockVersion: number;
             /** Name */
             name: string;
             /** Publicconfig */
@@ -751,6 +1298,11 @@ export interface components {
              */
             becomeUser: string;
             /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            credentialType: "PASSWORD";
+            /**
              * Description
              * @default
              */
@@ -765,10 +1317,24 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** CredentialRevisionResponse */
+        CredentialRevisionResponse: {
+            /** Createdat */
+            createdAt: unknown;
+            /** Encryptionkeyversion */
+            encryptionKeyVersion: number;
+            /** Version */
+            version: number;
+        };
         /** CredentialRotateRequest */
         CredentialRotateRequest: {
             /** Becomepassword */
             becomePassword?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            credentialType: "PASSWORD";
             /**
              * Password
              * Format: password
@@ -779,11 +1345,33 @@ export interface components {
          * CredentialType
          * @enum {string}
          */
-        CredentialType: "PASSWORD";
+        CredentialType: "PASSWORD" | "SSH_PRIVATE_KEY";
+        /** CredentialUpdateRequest */
+        CredentialUpdateRequest: {
+            /** Becomeenabled */
+            becomeEnabled: boolean;
+            /** Becomemethod */
+            becomeMethod: string;
+            /** Becomeuser */
+            becomeUser: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Lockversion */
+            lockVersion: number;
+            /** Name */
+            name: string;
+            /** Username */
+            username: string;
+        };
         /** DatabasePlaybookCreateRequest */
         DatabasePlaybookCreateRequest: {
             /** Content */
-            content: string;
+            content?: string | null;
             /**
              * Description
              * @default
@@ -794,19 +1382,39 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /** Entrypoint */
+            entrypoint?: string | null;
+            /** Files */
+            files?: components["schemas"]["PlaybookFileRequest"][] | null;
             /** Name */
             name: string;
+            /** Parameterschema */
+            parameterSchema?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Supportscheckmode
+             * @default false
+             */
+            supportsCheckMode: boolean;
         };
         /** DatabasePlaybookDetailResponse */
         DatabasePlaybookDetailResponse: {
             /** Content */
-            content: string;
+            content?: string | null;
             /** Description */
             description: string;
             /** Editable */
             editable: boolean;
             /** Enabled */
             enabled: boolean;
+            /** Entrypoint */
+            entrypoint: string | null;
+            /**
+             * Files
+             * @default []
+             */
+            files: components["schemas"]["PlaybookRevisionFile"][];
             /**
              * Modifiedat
              * Format: date-time
@@ -814,17 +1422,24 @@ export interface components {
             modifiedAt: string;
             /** Name */
             name: string;
+            /** Parameterschema */
+            parameterSchema: {
+                [key: string]: unknown;
+            };
             /** Path */
             path?: string | null;
             /** Playbookid */
             playbookId?: string | null;
             /** Revision */
             revision?: number | null;
+            revisionFormat: components["schemas"]["PlaybookRevisionFormat"];
             /** Sha256 */
             sha256: string;
             /** Size */
             size: number;
             source: components["schemas"]["PlaybookSource"];
+            /** Supportscheckmode */
+            supportsCheckMode: boolean;
             /**
              * Validatedat
              * Format: date-time
@@ -838,7 +1453,7 @@ export interface components {
         /** DatabasePlaybookUpdateRequest */
         DatabasePlaybookUpdateRequest: {
             /** Content */
-            content: string;
+            content?: string | null;
             /**
              * Description
              * @default
@@ -849,10 +1464,42 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /** Entrypoint */
+            entrypoint?: string | null;
+            /** Files */
+            files?: components["schemas"]["PlaybookFileRequest"][] | null;
             /** Name */
             name: string;
+            /** Parameterschema */
+            parameterSchema?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Supportscheckmode
+             * @default false
+             */
+            supportsCheckMode: boolean;
             /** Version */
             version: number;
+        };
+        /** EncryptionUsageResponse */
+        EncryptionUsageResponse: {
+            /** Configured */
+            configured: boolean;
+            /** Credentialcount */
+            credentialCount: number;
+            /** Keyversion */
+            keyVersion: number;
+            /** Mfacount */
+            mfaCount: number;
+            /** Primary */
+            primary: boolean;
+            /** Runsecretcount */
+            runSecretCount: number;
+            /** Systemcount */
+            systemCount: number;
+            /** Totalcount */
+            totalCount: number;
         };
         /** ErrorResponse */
         ErrorResponse: {
@@ -1098,6 +1745,52 @@ export interface components {
             /** Yaml */
             yaml: string;
         };
+        /** KeyRotationResponse */
+        KeyRotationResponse: {
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Errorcode */
+            errorCode: string | null;
+            /** Finishedat */
+            finishedAt: string | null;
+            /**
+             * Keyrotationjobid
+             * Format: uuid
+             */
+            keyRotationJobId: string;
+            /** Processedcount */
+            processedCount: number;
+            /** Remainingcount */
+            remainingCount: number | null;
+            /** Startedat */
+            startedAt: string | null;
+            state: components["schemas"]["KeyRotationState"];
+            /** Targetkeyversion */
+            targetKeyVersion: number;
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
+        };
+        /**
+         * KeyRotationState
+         * @enum {string}
+         */
+        KeyRotationState: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+        /** KeyringStatusResponse */
+        KeyringStatusResponse: {
+            /** Configuredversions */
+            configuredVersions: number[];
+            latestRotation: components["schemas"]["KeyRotationResponse"] | null;
+            /** Primaryversion */
+            primaryVersion: number;
+            /** Usage */
+            usage: components["schemas"]["EncryptionUsageResponse"][];
+        };
         /** LoginRequest */
         LoginRequest: {
             /**
@@ -1107,6 +1800,20 @@ export interface components {
             password: string;
             /** Username */
             username: string;
+        };
+        /** MfaCompletionResponse */
+        MfaCompletionResponse: {
+            /** Recoverycodes */
+            recoveryCodes?: string[];
+            session: components["schemas"]["SessionResponse"];
+        };
+        /** MfaVerifyRequest */
+        MfaVerifyRequest: {
+            /**
+             * Value
+             * Format: password
+             */
+            value: string;
         };
         /** OverviewResponse */
         OverviewResponse: {
@@ -1121,6 +1828,11 @@ export interface components {
             /** Runstoday */
             runsToday: number;
         };
+        /**
+         * Permission
+         * @enum {string}
+         */
+        Permission: "asset:read" | "asset:write" | "credential:write" | "playbook:write" | "run:standard" | "run:shell" | "run:cancel" | "web-shell:open" | "audit:read" | "user:read" | "user:manage" | "key:rotate";
         /** PlaybookConfigResponse */
         PlaybookConfigResponse: {
             /** Databaseenabled */
@@ -1133,6 +1845,28 @@ export interface components {
             mountReadOnly: boolean;
             sourceMode: components["schemas"]["PlaybookSourceMode"];
         };
+        /** PlaybookDiffResponse */
+        PlaybookDiffResponse: {
+            /** Added */
+            added: string[];
+            /** Againstrevision */
+            againstRevision: number;
+            /** Deleted */
+            deleted: string[];
+            /** Diff */
+            diff: string;
+            /** Modified */
+            modified: string[];
+            /** Revision */
+            revision: number;
+        };
+        /** PlaybookFileRequest */
+        PlaybookFileRequest: {
+            /** Content */
+            content: string;
+            /** Path */
+            path: string;
+        };
         /** PlaybookReferenceRequest */
         PlaybookReferenceRequest: {
             /** Path */
@@ -1141,8 +1875,93 @@ export interface components {
             playbookId?: string | null;
             source: components["schemas"]["PlaybookSource"];
         };
+        /** PlaybookRestoreRequest */
+        PlaybookRestoreRequest: {
+            /** Version */
+            version: number;
+        };
+        /** PlaybookRevisionFile */
+        PlaybookRevisionFile: {
+            /** Content */
+            content: string;
+            /** Path */
+            path: string;
+            /** Sha256 */
+            sha256: string;
+            /** Sizebytes */
+            sizeBytes: number;
+        };
+        /**
+         * PlaybookRevisionFormat
+         * @enum {string}
+         */
+        PlaybookRevisionFormat: "LEGACY_SINGLE_YAML" | "PROJECT";
+        /** PlaybookRevisionResponse */
+        PlaybookRevisionResponse: {
+            /** Content */
+            content?: string | null;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /**
+             * Createdby
+             * Format: uuid
+             */
+            createdBy: string;
+            /** Entrypoint */
+            entrypoint: string | null;
+            /** Files */
+            files?: components["schemas"]["PlaybookRevisionFile"][] | null;
+            /** Parameterschema */
+            parameterSchema: {
+                [key: string]: unknown;
+            };
+            /** Revision */
+            revision: number;
+            revisionFormat: components["schemas"]["PlaybookRevisionFormat"];
+            /** Sha256 */
+            sha256: string;
+            /** Sizebytes */
+            sizeBytes: number;
+            /** Supportscheckmode */
+            supportsCheckMode: boolean;
+            /**
+             * Validatedat
+             * Format: date-time
+             */
+            validatedAt: string;
+            /** Validatorversion */
+            validatorVersion: string;
+        };
+        /** PlaybookRunPreviewResponse */
+        PlaybookRunPreviewResponse: {
+            /** Checkmode */
+            checkMode: boolean;
+            /** Digest */
+            digest: string;
+            /** Parameternames */
+            parameterNames: string[];
+            playbookSource: components["schemas"]["PlaybookSource"];
+            /** Revision */
+            revision: number | null;
+            /** Sensitiveparameters */
+            sensitiveParameters: components["schemas"]["SensitiveParameterPreview"][];
+            /** Skiptags */
+            skipTags: string[];
+            /** Tags */
+            tags: string[];
+            /** Targetcount */
+            targetCount: number;
+        };
         /** PlaybookRunRequest */
         PlaybookRunRequest: {
+            /**
+             * Checkmode
+             * @default false
+             */
+            checkMode: boolean;
             /** Extravars */
             extraVars?: {
                 [key: string]: unknown;
@@ -1152,6 +1971,10 @@ export interface components {
              * @default 5
              */
             forks: number;
+            /** Parameters */
+            parameters?: {
+                [key: string]: unknown;
+            } | null;
             playbook?: components["schemas"]["PlaybookReferenceRequest"] | null;
             /**
              * Playbookpath
@@ -1193,6 +2016,8 @@ export interface components {
             editable: boolean;
             /** Enabled */
             enabled: boolean;
+            /** Entrypoint */
+            entrypoint: string | null;
             /**
              * Modifiedat
              * Format: date-time
@@ -1206,11 +2031,14 @@ export interface components {
             playbookId?: string | null;
             /** Revision */
             revision?: number | null;
+            revisionFormat: components["schemas"]["PlaybookRevisionFormat"];
             /** Sha256 */
             sha256: string;
             /** Size */
             size: number;
             source: components["schemas"]["PlaybookSource"];
+            /** Supportscheckmode */
+            supportsCheckMode: boolean;
             /** Version */
             version?: number | null;
         };
@@ -1218,12 +2046,25 @@ export interface components {
         PlaybookValidationRequest: {
             /** Content */
             content?: string | null;
+            /** Entrypoint */
+            entrypoint?: string | null;
+            /** Files */
+            files?: components["schemas"]["PlaybookFileRequest"][] | null;
+            /** Parameterschema */
+            parameterSchema?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Path
              * @deprecated
              */
             path?: string | null;
             playbook?: components["schemas"]["PlaybookReferenceRequest"] | null;
+            /**
+             * Supportscheckmode
+             * @default false
+             */
+            supportsCheckMode: boolean;
         };
         /** PlaybookValidationResponse */
         PlaybookValidationResponse: {
@@ -1231,6 +2072,47 @@ export interface components {
             output: string;
             /** Valid */
             valid: boolean;
+        };
+        /** PlaybookZipImportResponse */
+        PlaybookZipImportResponse: {
+            /** Entrypoint */
+            entrypoint: string;
+            /** Files */
+            files: components["schemas"]["PlaybookRevisionFile"][];
+            /** Sha256 */
+            sha256: string;
+            /** Sizebytes */
+            sizeBytes: number;
+        };
+        /** ReauthenticateRequest */
+        ReauthenticateRequest: {
+            /**
+             * Mfavalue
+             * Format: password
+             */
+            mfaValue: string;
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+        };
+        /** RecoveryCodesResponse */
+        RecoveryCodesResponse: {
+            /** Recoverycodes */
+            recoveryCodes: string[];
+        };
+        /**
+         * RequestFingerprintScheme
+         * @enum {string}
+         */
+        RequestFingerprintScheme: "LEGACY_SHA256" | "HMAC_SHA256_V1";
+        /** RetryRunRequest */
+        RetryRunRequest: {
+            /** Parameters */
+            parameters?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** Run */
         Run: {
@@ -1274,6 +2156,8 @@ export interface components {
             playbookRevision?: number | null;
             /** Requestfingerprint */
             requestFingerprint: string;
+            /** @default LEGACY_SHA256 */
+            requestFingerprintScheme: components["schemas"]["RequestFingerprintScheme"];
             /**
              * Requestedby
              * Format: uuid
@@ -1429,13 +2313,42 @@ export interface components {
          * @enum {string}
          */
         RunTargetStatus: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELED" | "SKIPPED" | "UNREACHABLE" | "INTERRUPTED";
+        /** SecurityStatusResponse */
+        SecurityStatusResponse: {
+            /** Elevateduntil */
+            elevatedUntil: string | null;
+            /** Mfaenabled */
+            mfaEnabled: boolean;
+            /** Mfaenrollmentrequired */
+            mfaEnrollmentRequired: boolean;
+            /** Unusedrecoverycodes */
+            unusedRecoveryCodes: number;
+        };
+        /** SensitiveParameterPreview */
+        SensitiveParameterPreview: {
+            /** Name */
+            name: string;
+            /** Supplied */
+            supplied: boolean;
+        };
         /** SessionResponse */
         SessionResponse: {
+            /** Elevateduntil */
+            elevatedUntil: string | null;
             /**
              * Expiresat
              * Format: date-time
              */
             expiresAt: string;
+            /** Mfaenabled */
+            mfaEnabled: boolean;
+            /** Mfaenrollmentrequired */
+            mfaEnrollmentRequired: boolean;
+            /** Mfaverifiedat */
+            mfaVerifiedAt: string | null;
+            /** Permissions */
+            permissions: components["schemas"]["Permission"][];
+            role: components["schemas"]["UserRole"];
             /**
              * Userid
              * Format: uuid
@@ -1443,6 +2356,64 @@ export interface components {
             userId: string;
             /** Username */
             username: string;
+        };
+        /** SshPrivateKeyCredentialCreateRequest */
+        SshPrivateKeyCredentialCreateRequest: {
+            /**
+             * Becomeenabled
+             * @default false
+             */
+            becomeEnabled: boolean;
+            /**
+             * Becomemethod
+             * @default sudo
+             */
+            becomeMethod: string;
+            /** Becomepassword */
+            becomePassword?: string | null;
+            /**
+             * Becomeuser
+             * @default root
+             */
+            becomeUser: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            credentialType: "SSH_PRIVATE_KEY";
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Name */
+            name: string;
+            /** Passphrase */
+            passphrase?: string | null;
+            /**
+             * Privatekey
+             * Format: password
+             */
+            privateKey: string;
+            /** Username */
+            username: string;
+        };
+        /** SshPrivateKeyCredentialRotateRequest */
+        SshPrivateKeyCredentialRotateRequest: {
+            /** Becomepassword */
+            becomePassword?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            credentialType: "SSH_PRIVATE_KEY";
+            /** Passphrase */
+            passphrase?: string | null;
+            /**
+             * Privatekey
+             * Format: password
+             */
+            privateKey: string;
         };
         /**
          * TargetKind
@@ -1460,6 +2431,51 @@ export interface components {
             hostIds: string[];
             kind: components["schemas"]["TargetKind"];
         };
+        /** UpdateUserRequest */
+        UpdateUserRequest: {
+            /** Expectedversion */
+            expectedVersion: number;
+            role: components["schemas"]["UserRole"];
+            status: components["schemas"]["UserStatus"];
+        };
+        /** UserResponse */
+        UserResponse: {
+            /** Activatedat */
+            activatedAt: string | null;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Mfaenrollmentrequired */
+            mfaEnrollmentRequired: boolean;
+            role: components["schemas"]["UserRole"];
+            status: components["schemas"]["UserStatus"];
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
+            /**
+             * Userid
+             * Format: uuid
+             */
+            userId: string;
+            /** Username */
+            username: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * UserRole
+         * @enum {string}
+         */
+        UserRole: "OWNER" | "ADMIN" | "OPERATOR" | "AUDITOR";
+        /**
+         * UserStatus
+         * @enum {string}
+         */
+        UserStatus: "PENDING_ACTIVATION" | "ACTIVE" | "DISABLED";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -1514,6 +2530,121 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listAuditEvents: {
+        parameters: {
+            query?: {
+                since?: string | null;
+                until?: string | null;
+                action?: components["schemas"]["AuditAction"] | null;
+                outcome?: components["schemas"]["AuditOutcome"] | null;
+                source?: components["schemas"]["AuditSource"] | null;
+                runId?: string | null;
+                actorUserId?: string | null;
+                resourceType?: string | null;
+                resourceId?: string | null;
+                errorCode?: string | null;
+                beforeId?: number | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    exportAuditEvents: {
+        parameters: {
+            query: {
+                since: string;
+                until: string;
+                action?: components["schemas"]["AuditAction"] | null;
+                outcome?: components["schemas"]["AuditOutcome"] | null;
+                source?: components["schemas"]["AuditSource"] | null;
+                runId?: string | null;
+                actorUserId?: string | null;
+                resourceType?: string | null;
+                resourceId?: string | null;
+                errorCode?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    activateUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"] | components["schemas"]["AuthChallengeResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     login: {
         parameters: {
             query?: never;
@@ -1533,7 +2664,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionResponse"];
+                    "application/json": components["schemas"]["SessionResponse"] | components["schemas"]["AuthChallengeResponse"];
                 };
             };
             /** @description Invalid credentials */
@@ -1601,7 +2732,305 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Origin or CSRF validation failed */
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description State conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    beginMfaEnrollment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthChallengeResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    confirmMfaEnrollment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaVerifyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaCompletionResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    verifyMfa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaVerifyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaCompletionResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    changeOwnPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description State conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reauthenticate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReauthenticateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    regenerateRecoveryCodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryCodesResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description State conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getSecurityStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityStatusResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -1641,6 +3070,15 @@ export interface operations {
             };
             /** @description Authentication required */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1688,7 +3126,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CredentialCreateRequest"];
+                "application/json": components["schemas"]["CredentialCreateRequest"] | components["schemas"]["SshPrivateKeyCredentialCreateRequest"];
             };
         };
         responses: {
@@ -1743,6 +3181,41 @@ export interface operations {
             };
         };
     };
+    updateCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                credential_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Credential"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     deleteCredential: {
         parameters: {
             query?: never;
@@ -1772,6 +3245,37 @@ export interface operations {
             };
         };
     };
+    listCredentialRevisions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                credential_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialRevisionResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rotateCredential: {
         parameters: {
             query?: never;
@@ -1783,7 +3287,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CredentialRotateRequest"];
+                "application/json": components["schemas"]["CredentialRotateRequest"] | components["schemas"]["SshPrivateKeyCredentialRotateRequest"];
             };
         };
         responses: {
@@ -2427,6 +3931,39 @@ export interface operations {
             };
         };
     };
+    importPlaybookProjectZip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_importPlaybookProjectZip"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookZipImportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     getDatabasePlaybook: {
         parameters: {
             query?: never;
@@ -2512,6 +4049,171 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listPlaybookRevisions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookRevisionResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getPlaybookRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playbook_id: string;
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    diffPlaybookRevisions: {
+        parameters: {
+            query: {
+                againstRevision: number;
+            };
+            header?: never;
+            path: {
+                playbook_id: string;
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookDiffResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    exportPlaybookProjectZip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playbook_id: string;
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restorePlaybookRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playbook_id: string;
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaybookRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabasePlaybookDetailResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -2690,6 +4392,39 @@ export interface operations {
             };
         };
     };
+    previewPlaybookRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaybookRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookRunPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     getRun: {
         parameters: {
             query?: never;
@@ -2831,7 +4566,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RetryRunRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {
@@ -2893,6 +4632,329 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    getKeyringStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyringStatusResponse"];
+                };
+            };
+        };
+    };
+    requestKeyRotation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyRotationResponse"];
+                };
+            };
+        };
+    };
+    listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponse"][];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateUserRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedUserResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description State conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description State conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reissueUserActivation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedUserResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description State conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resetUserMfa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description State conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

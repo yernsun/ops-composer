@@ -32,9 +32,7 @@ class SystemService:
                 "enabled": mount_enabled,
                 "checked": mount_enabled,
                 "ok": mount_ok,
-                "degraded": bool(
-                    mode.database_enabled and mount_enabled and not mount_ok
-                ),
+                "degraded": bool(mode.database_enabled and mount_enabled and not mount_ok),
                 "readOnlyExpected": True,
                 "path": str(workspace),
                 "playbookDirectory": str(mount_directory),

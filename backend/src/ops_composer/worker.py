@@ -5,11 +5,12 @@ import copy
 import importlib
 import json
 import os
+import shlex
 import shutil
 import socket
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
@@ -31,8 +32,11 @@ from ops_composer.domain.errors import (
     HostKeyConfirmationRequiredError,
     OpsError,
     PlaybookNotFoundError,
+    SecretParametersRequiredError,
 )
 from ops_composer.domain.ops import (
+    PlaybookRevisionFile,
+    PlaybookRevisionFormat,
     PlaybookSource,
     Run,
     RunStatus,
@@ -47,10 +51,13 @@ from ops_composer.observability import (
 )
 from ops_composer.services.assets import AssetService, CredentialService
 from ops_composer.services.audit import AuditService, new_audit_event
-from ops_composer.services.crypto import CredentialCipher, redact_secrets
+from ops_composer.services.crypto import CredentialCipher, build_master_keyring, redact_secrets
+from ops_composer.services.encryption import EncryptionService
+from ops_composer.services.playbook_project import normalize_project
 from ops_composer.services.playbooks import PlaybookCatalog
 from ops_composer.services.runs import RunService, WorkerCoordinator
 from ops_composer.settings import Settings
+from ops_composer.ssh_agent import EphemeralSshAgent
 from ops_composer.uow.factory import UnitOfWorkFactory
 
 SENSITIVE_KEYS = ("password", "secret", "private_key", "privatekey", "passphrase")
@@ -99,6 +106,19 @@ class TargetAccumulator:
         self.truncated = True
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedInventory:
+    inventory: dict[str, object]
+    secrets: tuple[str, ...]
+    private_key_revisions: dict[tuple[str, int], dict[str, str]]
+    private_key_hosts: dict[str, tuple[str, int]]
+
+    def __iter__(self) -> Iterator[object]:
+        """Preserve the original two-value unpacking contract for integration callers."""
+        yield self.inventory
+        yield self.secrets
+
+
 class RuntimeDirectory:
     def __init__(self, root: Path, run_id: UUID) -> None:
         self.root = root.resolve()
@@ -112,11 +132,11 @@ class RuntimeDirectory:
         self.path.mkdir(mode=0o700)
         return self
 
-    def write(self, relative: str, content: str) -> Path:
+    def write(self, relative: str, content: str, *, mode: int = 0o600) -> Path:
         path = self.path / relative
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        path.chmod(0o600)
+        path.chmod(mode)
         return path
 
     def __exit__(self, *_: object) -> None:
@@ -201,6 +221,8 @@ class AnsibleExecutor:
                     "skip_tags": ",".join(str(item) for item in skip_tags),
                 }
             )
+            if operation.get("checkMode") is True:
+                common["cmdline"] = "--check"
         else:
             if run.kind.value == "PING":
                 module = "ansible.builtin.ping"
@@ -220,7 +242,7 @@ class AnsibleExecutor:
 async def _runtime_inventory(
     run: Run,
     credentials: CredentialService,
-) -> tuple[dict[str, object], tuple[str, ...]]:
+) -> PreparedInventory:
     inventory = copy.deepcopy(run.inventory_snapshot)
     all_value = inventory.get("all")
     if not isinstance(all_value, dict):
@@ -230,6 +252,8 @@ async def _runtime_inventory(
         raise ValueError("inventory snapshot hosts are invalid")
     secret_values: list[str] = []
     revisions: dict[tuple[str, int], dict[str, str]] = {}
+    private_key_revisions: dict[tuple[str, int], dict[str, str]] = {}
+    private_key_hosts: dict[str, tuple[str, int]] = {}
     for target in run.resolved_targets:
         credential_id = str(target["credentialId"])
         version = int(str(target["credentialVersion"]))
@@ -237,11 +261,18 @@ async def _runtime_inventory(
         if cache_key not in revisions:
             revisions[cache_key] = await credentials.decrypt_revision(UUID(credential_id), version)
         secret = revisions[cache_key]
-        secret_values.extend(secret.values())
-        host_variables = hosts_value.get(str(target["name"]))
+        secret_values.extend(value for value in secret.values() if value)
+        host_name = str(target["name"])
+        host_variables = hosts_value.get(host_name)
         if not isinstance(host_variables, dict):
             raise ValueError("inventory target snapshot is invalid")
-        host_variables["ansible_password"] = secret["password"]
+        if "password" in secret:
+            host_variables["ansible_password"] = secret["password"]
+        elif "privateKey" in secret:
+            private_key_revisions[cache_key] = secret
+            private_key_hosts[host_name] = cache_key
+        else:
+            raise ValueError("credential secret payload is invalid")
         become = (
             str(run.operation_spec.get("become", "CREDENTIAL_DEFAULT"))
             if run.kind.value == "COMMAND"
@@ -259,14 +290,59 @@ async def _runtime_inventory(
             host_variables["ansible_become"] = True
             host_variables.setdefault("ansible_become_method", "sudo")
             host_variables.setdefault("ansible_become_user", "root")
-            host_variables["ansible_become_password"] = secret.get(
-                "becomePassword", secret["password"]
-            )
+            become_password = secret.get("becomePassword") or secret.get("password")
+            if become_password is not None:
+                host_variables["ansible_become_password"] = become_password
         elif host_variables.get("ansible_become"):
-            host_variables["ansible_become_password"] = secret.get(
-                "becomePassword", secret["password"]
+            become_password = secret.get("becomePassword") or secret.get("password")
+            if become_password is not None:
+                host_variables["ansible_become_password"] = become_password
+    return PreparedInventory(
+        inventory,
+        tuple(secret_values),
+        private_key_revisions,
+        private_key_hosts,
+    )
+
+
+async def _start_private_key_agents(
+    runtime: RuntimeDirectory,
+    inventory: dict[str, object],
+    revisions: dict[tuple[str, int], dict[str, str]],
+    hosts: dict[str, tuple[str, int]],
+) -> list[EphemeralSshAgent]:
+    all_value = inventory.get("all")
+    host_values = all_value.get("hosts") if isinstance(all_value, dict) else None
+    if not isinstance(host_values, dict):
+        raise ValueError("inventory snapshot hosts are invalid")
+    agents: list[EphemeralSshAgent] = []
+    wrappers: dict[tuple[str, int], Path] = {}
+    try:
+        for index, key in enumerate(sorted(revisions)):
+            secret = revisions[key]
+            agent = await EphemeralSshAgent.start(
+                runtime.path / f"ssh-agent-{index}",
+                secret["privateKey"],
+                secret.get("passphrase"),
             )
-    return inventory, tuple(secret_values)
+            agents.append(agent)
+            wrapper = runtime.write(
+                f"ssh-agent-{index}.sh",
+                "#!/bin/sh\n"
+                f"SSH_AUTH_SOCK={shlex.quote(str(agent.socket_path))} "
+                'exec /usr/bin/ssh "$@"\n',
+                mode=0o700,
+            )
+            wrappers[key] = wrapper
+        for host_name, key in hosts.items():
+            values = host_values.get(host_name)
+            if not isinstance(values, dict):
+                raise ValueError("inventory target snapshot is invalid")
+            values["ansible_ssh_executable"] = str(wrappers[key])
+        return agents
+    except Exception:
+        await asyncio.gather(*(agent.close() for agent in agents), return_exceptions=True)
+        raise
 
 
 async def _known_hosts(run: Run, assets: AssetService) -> str:
@@ -293,26 +369,58 @@ async def execute_run(
     factory: UnitOfWorkFactory,
     settings: Settings,
     coordinator: WorkerCoordinator,
+    cipher: CredentialCipher | None = None,
 ) -> None:
     run_service = RunService(factory, settings)
-    credentials = CredentialService(
-        factory,
-        CredentialCipher(settings.master_key.get_secret_value(), settings.master_key_version),
-    )
+    if cipher is None:
+        cipher = CredentialCipher(
+            build_master_keyring(
+                keyring_file=settings.master_keyring_file,
+                fallback_key=settings.master_key.get_secret_value(),
+                fallback_version=settings.master_key_version,
+            )
+        )
+    credentials = CredentialService(factory, cipher)
     assets = AssetService(factory)
     audit_service = AuditService(factory)
     mounted_playbook_path: Path | None = None
     database_playbook_content: str | None = None
+    database_playbook_files: tuple[PlaybookRevisionFile, ...] = ()
+    database_playbook_entrypoint: str | None = None
+    run_secret_values: dict[str, str] = {}
+    secret_inputs_irrecoverable = False
+    run_started = False
     try:
         _, targets = await run_service.detail(run.run_id)
+        raw_secret_names = run.operation_spec.get("secretParameterNames", [])
+        if not isinstance(raw_secret_names, list) or not all(
+            isinstance(item, str) for item in raw_secret_names
+        ):
+            raise ValueError("Run secret parameter metadata is invalid")
+        if raw_secret_names:
+            try:
+                run_secret_values = await run_service.consume_secret_inputs(
+                    run.run_id, tuple(raw_secret_names)
+                )
+            except SecretParametersRequiredError:
+                # A claimed Run with declared secret inputs but no envelope was already
+                # consumed by a prior Worker attempt and cannot be replayed safely.
+                secret_inputs_irrecoverable = True
+                raise
+            secret_inputs_irrecoverable = True
+        if run_secret_values:
+            operation_spec = copy.deepcopy(run.operation_spec)
+            raw_extra_vars = operation_spec.get("extraVars", {})
+            if not isinstance(raw_extra_vars, dict):
+                raise ValueError("Run Playbook parameters are invalid")
+            operation_spec["extraVars"] = {**raw_extra_vars, **run_secret_values}
+            run = run.model_copy(update={"operation_spec": operation_spec})
         if run.kind.value == "PLAYBOOK":
             raw_reference = run.operation_spec.get("playbook")
             reference = raw_reference if isinstance(raw_reference, dict) else {}
             raw_source = reference.get("source")
             source = (
-                PlaybookSource(str(raw_source))
-                if raw_source is not None
-                else PlaybookSource.MOUNT
+                PlaybookSource(str(raw_source)) if raw_source is not None else PlaybookSource.MOUNT
             )
             if source is PlaybookSource.DATABASE:
                 if run.playbook_id is None or run.playbook_revision is None:
@@ -325,7 +433,21 @@ async def execute_run(
                     raise PlaybookNotFoundError("database Playbook revision was not found")
                 if revision.sha256 != run.workspace_revision:
                     raise ValueError("database Playbook revision hash does not match the Run")
-                database_playbook_content = revision.content
+                if revision.revision_format is PlaybookRevisionFormat.PROJECT:
+                    if revision.entrypoint is None:
+                        raise ValueError("database Playbook entrypoint is missing")
+                    verified = normalize_project(
+                        {item.path: item.content for item in revision.files},
+                        revision.entrypoint,
+                    )
+                    if verified.sha256 != revision.sha256:
+                        raise ValueError("database Playbook project digest does not match")
+                    database_playbook_files = revision.files
+                    database_playbook_entrypoint = revision.entrypoint
+                else:
+                    if revision.content is None:
+                        raise ValueError("database Playbook content is missing")
+                    database_playbook_content = revision.content
             else:
                 raw_path = reference.get("path") or run.operation_spec.get("playbookPath")
                 if raw_path is None:
@@ -335,10 +457,19 @@ async def execute_run(
                 if playbook.sha256 != run.workspace_revision:
                     raise ValueError("playbook content changed after this run was created")
                 mounted_playbook_path = PlaybookCatalog(settings.playbook_workspace).resolve(path)
-        inventory, secret_values = await _runtime_inventory(run, credentials)
+        prepared_inventory = await _runtime_inventory(run, credentials)
+        inventory = prepared_inventory.inventory
+        secret_values = prepared_inventory.secrets
+        private_key_revisions = prepared_inventory.private_key_revisions
+        private_key_hosts = prepared_inventory.private_key_hosts
+        secret_values = (*secret_values, *run_secret_values.values())
         known_hosts = await _known_hosts(run, assets)
     except (OpsError, ValueError, KeyError) as error:
+        interrupted = secret_inputs_irrecoverable
         failure_code = (
+            "SECRET_INPUTS_CONSUMED"
+            if interrupted
+            else
             "HOST_KEY_CONFIRMATION_REQUIRED"
             if isinstance(error, HostKeyConfirmationRequiredError)
             else error.code.upper()
@@ -346,13 +477,16 @@ async def execute_run(
             else "PREPARATION_FAILED"
         )
         failure_message = (
+            "run interrupted after consuming sensitive parameters"
+            if interrupted
+            else
             error.message
             if isinstance(error, HostKeyConfirmationRequiredError)
             else "run preparation failed"
         )
         await audit_service.record_best_effort(
             new_audit_event(
-                AuditAction.RUN_PREPARATION_FAILED,
+                AuditAction.RUN_INTERRUPTED if interrupted else AuditAction.RUN_PREPARATION_FAILED,
                 AuditOutcome.FAILED,
                 source=AuditSource.WORKER,
                 severity=AuditSeverity.WARNING,
@@ -360,24 +494,31 @@ async def execute_run(
                 worker_id=coordinator.worker_id,
                 resource_type="run",
                 resource_id=run.run_id,
-                error_code=(error.code if isinstance(error, OpsError) else "PREPARATION_FAILED"),
+                error_code=(
+                    "SECRET_INPUTS_CONSUMED"
+                    if interrupted
+                    else error.code
+                    if isinstance(error, OpsError)
+                    else "PREPARATION_FAILED"
+                ),
                 exception_type=type(error).__name__,
                 failure_stage="run_preparation",
-                retryable=False,
+                retryable=interrupted,
                 metadata={
                     "operation_kind": run.kind.value,
                     "target_count": len(run.resolved_targets),
+                    "requires_secret_parameters": interrupted,
                 },
             )
         )
         await coordinator.append_event(
             run.run_id,
-            event_type="run_rejected",
+            event_type="run_interrupted" if interrupted else "run_rejected",
             event_data={"code": failure_code, "message": failure_message},
         )
         await coordinator.finish(
             run.run_id,
-            status=RunStatus.REJECTED,
+            status=RunStatus.INTERRUPTED if interrupted else RunStatus.REJECTED,
             return_code=None,
             summary={},
             failure_code=failure_code,
@@ -396,6 +537,7 @@ async def execute_run(
     loop = asyncio.get_running_loop()
     cancel = Event()
     runtime_path: Path | None = None
+    ssh_agents: list[EphemeralSshAgent] = []
 
     def event_handler(raw_event: dict[str, Any]) -> bool:
         sanitized = _sanitize(raw_event, secret_values)
@@ -426,6 +568,12 @@ async def execute_run(
                     metadata={"file_mode": "0700"},
                 )
             )
+            ssh_agents = await _start_private_key_agents(
+                runtime,
+                inventory,
+                private_key_revisions,
+                private_key_hosts,
+            )
             inventory_path = runtime.write(
                 "inventory.yml",
                 yaml.safe_dump(inventory, allow_unicode=True, sort_keys=True),
@@ -440,7 +588,14 @@ async def execute_run(
                     "project/playbook.yml", database_playbook_content
                 )
                 execution_project_dir = runtime.path / "project"
+            elif database_playbook_files:
+                assert database_playbook_entrypoint is not None
+                for item in database_playbook_files:
+                    runtime.write(f"project/{item.path}", item.content)
+                execution_project_dir = runtime.path / "project"
+                execution_playbook_path = execution_project_dir / database_playbook_entrypoint
             await coordinator.mark_running(run.run_id)
+            run_started = True
             await coordinator.append_event(run.run_id, event_type="run_started")
             execution = asyncio.create_task(
                 asyncio.to_thread(
@@ -510,24 +665,34 @@ async def execute_run(
             monitor_task.cancel()
             await asyncio.gather(monitor_task, return_exceptions=True)
     except Exception as error:
-        safe_message = "runner execution failed"
+        interrupted = secret_inputs_irrecoverable and not run_started
+        safe_message = (
+            "run interrupted after consuming sensitive parameters"
+            if interrupted
+            else "runner execution failed"
+        )
         await coordinator.append_event(
             run.run_id,
-            event_type="runner_error",
+            event_type="run_interrupted" if interrupted else "runner_error",
             event_data={"message": safe_message},
         )
         await coordinator.finish(
             run.run_id,
-            status=RunStatus.FAILED,
+            status=RunStatus.INTERRUPTED if interrupted else RunStatus.FAILED,
             return_code=None,
             summary={},
-            failure_code="RUNNER_ERROR",
+            failure_code="SECRET_INPUTS_CONSUMED" if interrupted else "RUNNER_ERROR",
             failure_message=safe_message,
             exception_type=type(error).__name__,
-            failure_stage="runner_execution",
+            failure_stage="run_preparation" if interrupted else "runner_execution",
         )
         return
     finally:
+        if ssh_agents:
+            await asyncio.gather(
+                *(agent.close() for agent in ssh_agents),
+                return_exceptions=True,
+            )
         if runtime_path is not None:
             cleaned = not runtime_path.exists()
             await audit_service.record_best_effort(
@@ -535,9 +700,7 @@ async def execute_run(
                     AuditAction.RUNTIME_DIRECTORY_CLEANED,
                     AuditOutcome.SUCCEEDED if cleaned else AuditOutcome.FAILED,
                     source=AuditSource.WORKER,
-                    severity=(
-                        AuditSeverity.INFO if cleaned else AuditSeverity.ERROR
-                    ),
+                    severity=(AuditSeverity.INFO if cleaned else AuditSeverity.ERROR),
                     run_id=run.run_id,
                     worker_id=coordinator.worker_id,
                     resource_type="run",
@@ -707,9 +870,12 @@ async def run_worker(settings: Settings) -> None:
                 )
                 raise
             factory = UnitOfWorkFactory(pool)
-            cipher = CredentialCipher(
-                settings.master_key.get_secret_value(), settings.master_key_version
+            keyring = build_master_keyring(
+                keyring_file=settings.master_keyring_file,
+                fallback_key=settings.master_key.get_secret_value(),
+                fallback_version=settings.master_key_version,
             )
+            cipher = CredentialCipher(keyring)
             try:
                 await CredentialService(factory, cipher).ensure_master_key()
             except Exception as error:
@@ -739,6 +905,7 @@ async def run_worker(settings: Settings) -> None:
                     )
                 )
             coordinator = WorkerCoordinator(factory, settings, worker_id)
+            encryption_service = EncryptionService(factory, keyring)
             await coordinator.recover_stale()
             await _purge_expired_audit(factory, settings, worker_id=worker_id)
             await AuditService(factory).record_best_effort(
@@ -750,6 +917,7 @@ async def run_worker(settings: Settings) -> None:
                 )
             )
             next_cleanup = time.monotonic() + 86_400
+            next_rotation_poll = time.monotonic() + 5
             failure_count = 0
             first_failure_at: float | None = None
             last_failure_log_at = 0.0
@@ -759,6 +927,9 @@ async def run_worker(settings: Settings) -> None:
                     if time.monotonic() >= next_cleanup:
                         await _purge_expired_audit(factory, settings, worker_id=worker_id)
                         next_cleanup = time.monotonic() + 86_400
+                    if time.monotonic() >= next_rotation_poll:
+                        await encryption_service.process_rotation_batch(worker_id)
+                        next_rotation_poll = time.monotonic() + 1
                     await coordinator.heartbeat()
                     active_run = await coordinator.claim()
                     if active_run is None:
@@ -773,6 +944,7 @@ async def run_worker(settings: Settings) -> None:
                                 factory=factory,
                                 settings=settings,
                                 coordinator=coordinator,
+                                cipher=cipher,
                             )
                     if first_failure_at is not None:
                         elapsed_ms = round((time.monotonic() - first_failure_at) * 1000, 3)

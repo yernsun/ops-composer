@@ -12,7 +12,9 @@ import termios
 from contextlib import suppress
 from pathlib import Path
 
+from ops_composer.domain.ops import CredentialType
 from ops_composer.domain.web_shell import WebShellLaunch
+from ops_composer.ssh_agent import EphemeralSshAgent
 
 DEFAULT_COLUMNS = 120
 DEFAULT_ROWS = 30
@@ -29,10 +31,12 @@ class SshTerminal:
         process: asyncio.subprocess.Process,
         master_fd: int,
         runtime_path: Path,
+        ssh_agent: EphemeralSshAgent | None = None,
     ) -> None:
         self._process = process
         self._master_fd = master_fd
         self._runtime_path = runtime_path
+        self._ssh_agent = ssh_agent
         self._close_lock = asyncio.Lock()
         self._closed = False
 
@@ -59,6 +63,7 @@ class SshTerminal:
         password_read_fd = -1
         password_write_fd = -1
         process: asyncio.subprocess.Process | None = None
+        ssh_agent: EphemeralSshAgent | None = None
         try:
             known_hosts_fd = os.open(
                 known_hosts_path,
@@ -75,20 +80,64 @@ class SshTerminal:
             master_fd, slave_fd = pty.openpty()
             os.set_blocking(master_fd, False)
             cls._resize_fd(master_fd, columns, rows)
-            password_read_fd, password_write_fd = os.pipe()
-            os.set_inheritable(password_read_fd, True)
             minimal_environment = {
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "TERM": "xterm-256color",
                 "LANG": "C.UTF-8",
             }
+            inherited_fds: tuple[int, ...]
+            if launch.session.credential_type is CredentialType.PASSWORD:
+                if launch.password is None:
+                    raise SshTerminalStartError("password credential payload is missing")
+                password_read_fd, password_write_fd = os.pipe()
+                os.set_inheritable(password_read_fd, True)
+                command = ["sshpass", "-d", str(password_read_fd), "ssh"]
+                authentication_options = [
+                    "-o",
+                    "IdentitiesOnly=yes",
+                    "-o",
+                    "PubkeyAuthentication=no",
+                    "-o",
+                    "PasswordAuthentication=yes",
+                    "-o",
+                    "KbdInteractiveAuthentication=yes",
+                    "-o",
+                    "PreferredAuthentications=password,keyboard-interactive",
+                    "-o",
+                    "NumberOfPasswordPrompts=1",
+                ]
+                inherited_fds = (password_read_fd,)
+            else:
+                if launch.private_key is None:
+                    raise SshTerminalStartError("private-key credential payload is missing")
+                ssh_agent = await EphemeralSshAgent.start(
+                    runtime_path / "agent",
+                    launch.private_key.get_secret_value(),
+                    (
+                        launch.passphrase.get_secret_value()
+                        if launch.passphrase is not None
+                        else None
+                    ),
+                )
+                minimal_environment["SSH_AUTH_SOCK"] = str(ssh_agent.socket_path)
+                command = ["ssh"]
+                authentication_options = [
+                    "-o",
+                    "IdentitiesOnly=no",
+                    "-o",
+                    "PubkeyAuthentication=yes",
+                    "-o",
+                    "PasswordAuthentication=no",
+                    "-o",
+                    "KbdInteractiveAuthentication=no",
+                    "-o",
+                    "PreferredAuthentications=publickey",
+                ]
+                inherited_fds = ()
             process = await asyncio.create_subprocess_exec(
                 "setsid",
                 "--ctty",
-                "sshpass",
-                "-d",
-                str(password_read_fd),
-                "ssh",
+                *command,
                 "-F",
                 "/dev/null",
                 "-tt",
@@ -104,18 +153,7 @@ class SshTerminal:
                 "StrictHostKeyChecking=yes",
                 "-o",
                 "BatchMode=no",
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "PubkeyAuthentication=no",
-                "-o",
-                "PasswordAuthentication=yes",
-                "-o",
-                "KbdInteractiveAuthentication=yes",
-                "-o",
-                "PreferredAuthentications=password,keyboard-interactive",
-                "-o",
-                "NumberOfPasswordPrompts=1",
+                *authentication_options,
                 "-o",
                 f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
                 "-o",
@@ -127,21 +165,25 @@ class SshTerminal:
                 stdout=slave_fd,
                 stderr=slave_fd,
                 close_fds=True,
-                pass_fds=(password_read_fd,),
+                pass_fds=inherited_fds,
                 env=minimal_environment,
             )
             os.close(slave_fd)
             slave_fd = -1
-            os.close(password_read_fd)
-            password_read_fd = -1
-            password_bytes = memoryview(
-                launch.password.get_secret_value().encode("utf-8") + b"\n"
-            )
-            while password_bytes:
-                password_bytes = password_bytes[os.write(password_write_fd, password_bytes) :]
-            os.close(password_write_fd)
-            password_write_fd = -1
-            return cls(process, master_fd, runtime_path)
+            if password_read_fd >= 0:
+                os.close(password_read_fd)
+                password_read_fd = -1
+            if password_write_fd >= 0:
+                if launch.password is None:
+                    raise SshTerminalStartError("password credential payload is missing")
+                password_bytes = memoryview(
+                    launch.password.get_secret_value().encode("utf-8") + b"\n"
+                )
+                while password_bytes:
+                    password_bytes = password_bytes[os.write(password_write_fd, password_bytes) :]
+                os.close(password_write_fd)
+                password_write_fd = -1
+            return cls(process, master_fd, runtime_path, ssh_agent)
         except Exception as error:
             for descriptor in (slave_fd, password_read_fd, password_write_fd, master_fd):
                 if descriptor >= 0:
@@ -150,6 +192,8 @@ class SshTerminal:
             if process is not None and process.returncode is None:
                 process.kill()
                 await process.wait()
+            if ssh_agent is not None:
+                await ssh_agent.close()
             if runtime_path.is_dir() and runtime_path.parent == shell_root:
                 shutil.rmtree(runtime_path)
             raise SshTerminalStartError("local SSH terminal startup failed") from error
@@ -253,6 +297,8 @@ class SshTerminal:
                         break
                     except TimeoutError:
                         continue
+            if self._ssh_agent is not None:
+                await self._ssh_agent.close()
             shell_root = self._runtime_path.parent
             if self._runtime_path.is_dir() and self._runtime_path.parent == shell_root:
                 shutil.rmtree(self._runtime_path)

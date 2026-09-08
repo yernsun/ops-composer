@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import importlib.metadata
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -12,6 +14,8 @@ from uuid import UUID, uuid4
 
 import yaml
 
+from ops_composer.auth.models import Permission, SessionPrincipal
+from ops_composer.auth.service import require_permission
 from ops_composer.domain.audit import (
     AuditAction,
     AuditOutcome,
@@ -22,6 +26,7 @@ from ops_composer.domain.base import utc_now
 from ops_composer.domain.errors import (
     PlaybookInvalidError,
     PlaybookNotFoundError,
+    PlaybookProjectInvalidError,
     PlaybookSourceDisabledError,
     PlaybookVersionConflictError,
     ValidationError,
@@ -32,9 +37,18 @@ from ops_composer.domain.ops import (
     Playbook,
     PlaybookReference,
     PlaybookRevision,
+    PlaybookRevisionFile,
+    PlaybookRevisionFormat,
     PlaybookSource,
 )
 from ops_composer.services.audit import AuditService, emit_audit_event, new_audit_event
+from ops_composer.services.playbook_project import (
+    NormalizedProject,
+    export_project_zip,
+    import_project_zip,
+    normalize_project,
+    validate_parameter_schema,
+)
 from ops_composer.settings import PlaybookSourceMode, Settings
 from ops_composer.uow.factory import UnitOfWorkFactory
 
@@ -51,6 +65,10 @@ class PlaybookValidationResult:
     sha256: str | None = None
     size_bytes: int | None = None
     validator_version: str | None = None
+    normalized_files: tuple[PlaybookRevisionFile, ...] = field(default=(), repr=False)
+    entrypoint: str | None = None
+    parameter_schema: dict[str, object] | None = None
+    supports_check_mode: bool = False
 
 
 class PlaybookValidator:
@@ -87,28 +105,55 @@ class PlaybookValidator:
         return None
 
     async def _syntax_check(self, path: Path, *, cwd: Path) -> tuple[bool, str]:
+        executable = shutil.which("ansible-playbook")
+        if executable is None:
+            raise ValidationError("ansible-playbook is not installed")
+        config_fd, config_name = tempfile.mkstemp(
+            prefix="ops-composer-ansible-",
+            suffix=".cfg",
+        )
+        config_path = Path(config_name)
         try:
-            process = await asyncio.create_subprocess_exec(
-                "ansible-playbook",
-                "--syntax-check",
-                str(path),
-                cwd=cwd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+            os.write(
+                config_fd,
+                b"[defaults]\nretry_files_enabled = False\nhost_key_checking = True\n",
             )
-        except FileNotFoundError as error:
-            raise ValidationError("ansible-playbook is not installed") from error
+        finally:
+            os.close(config_fd)
+        environment = {
+            "PATH": f"{Path(executable).parent}:/usr/local/bin:/usr/bin:/bin",
+            "HOME": str(cwd),
+            "LANG": "C.UTF-8",
+            "ANSIBLE_CONFIG": str(config_path),
+            "ANSIBLE_RETRY_FILES_ENABLED": "False",
+            "ANSIBLE_ROLES_PATH": str(cwd / "roles"),
+        }
         try:
-            output, _ = await asyncio.wait_for(
-                process.communicate(), timeout=VALIDATION_TIMEOUT_SECONDS
-            )
-        except TimeoutError:
-            process.kill()
-            await process.communicate()
-            return False, "syntax check timed out"
-        text = output.decode("utf-8", errors="replace")[-MAX_VALIDATION_OUTPUT_BYTES:]
-        return process.returncode == 0, text
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    executable,
+                    "--syntax-check",
+                    str(path),
+                    cwd=cwd,
+                    env=environment,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            except FileNotFoundError as error:
+                raise ValidationError("ansible-playbook is not installed") from error
+            try:
+                output, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=VALIDATION_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                return False, "syntax check timed out"
+            text = output.decode("utf-8", errors="replace")[-MAX_VALIDATION_OUTPUT_BYTES:]
+            return process.returncode == 0, text
+        finally:
+            config_path.unlink(missing_ok=True)
 
     async def validate_path(self, path: Path, *, workspace: Path) -> PlaybookValidationResult:
         try:
@@ -140,6 +185,43 @@ class PlaybookValidator:
             sha256=hashlib.sha256(encoded).hexdigest(),
             size_bytes=len(encoded),
             validator_version=self.version,
+        )
+
+    async def validate_project(
+        self,
+        files: dict[str, str],
+        entrypoint: str,
+        parameter_schema: dict[str, object] | None,
+        supports_check_mode: bool,
+    ) -> PlaybookValidationResult:
+        project = normalize_project(files, entrypoint)
+        schema = validate_parameter_schema(parameter_schema)
+        entry = next(item for item in project.files if item.path == project.entrypoint)
+        structural_error = self._validate_document(entry.content)
+        if structural_error is not None:
+            return PlaybookValidationResult(valid=False, output=structural_error)
+        with tempfile.TemporaryDirectory(prefix="ops-composer-project-validation-") as directory:
+            workspace = Path(directory)
+            os.chmod(workspace, 0o700)
+            for item in project.files:
+                path = workspace / item.path
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path.write_text(item.content, encoding="utf-8")
+                path.chmod(0o600)
+            valid, output = await self._syntax_check(
+                workspace / project.entrypoint,
+                cwd=workspace,
+            )
+        return PlaybookValidationResult(
+            valid=valid,
+            output=output,
+            sha256=project.sha256,
+            size_bytes=project.size_bytes,
+            validator_version=self.version,
+            normalized_files=project.files,
+            entrypoint=project.entrypoint,
+            parameter_schema=schema,
+            supports_check_mode=supports_check_mode,
         )
 
 
@@ -252,9 +334,7 @@ class PlaybookService:
 
     def _mounted_catalog(self) -> PlaybookCatalog:
         if self._mounted is None:
-            self._mounted = PlaybookCatalog(
-                self._settings.playbook_workspace, self._validator
-            )
+            self._mounted = PlaybookCatalog(self._settings.playbook_workspace, self._validator)
         return self._mounted
 
     async def list(self) -> tuple[Playbook, ...]:
@@ -294,17 +374,40 @@ class PlaybookService:
         name: str,
         description: str,
         enabled: bool,
-        content: str,
+        content: str | None = None,
+        files: dict[str, str] | None = None,
+        entrypoint: str | None = None,
+        parameter_schema: dict[str, object] | None = None,
+        supports_check_mode: bool = False,
+        actor: SessionPrincipal | None = None,
     ) -> DatabasePlaybookDocument:
+        if actor is not None:
+            require_permission(actor, Permission.PLAYBOOK_WRITE)
         self._require_source(PlaybookSource.DATABASE)
         normalized_name = name.strip()
         if not normalized_name:
             raise PlaybookInvalidError("playbook name must not be empty")
-        validation = await self._validate_for_save(
-            content,
-            actor_user_id=actor_user_id,
-            playbook_id=None,
-        )
+        if (content is None) == (files is None):
+            raise PlaybookInvalidError("provide exactly one legacy content or project files")
+        if content is not None:
+            validation = await self._validate_for_save(
+                content,
+                actor_user_id=actor_user_id,
+                playbook_id=None,
+            )
+            revision_format = PlaybookRevisionFormat.LEGACY_SINGLE_YAML
+        else:
+            if entrypoint is None:
+                raise PlaybookInvalidError("project entrypoint is required")
+            validation = await self._validate_project_for_save(
+                files or {},
+                entrypoint,
+                parameter_schema,
+                supports_check_mode,
+                actor_user_id=actor_user_id,
+                playbook_id=None,
+            )
+            revision_format = PlaybookRevisionFormat.PROJECT
         now = utc_now()
         playbook_id = uuid4()
         playbook = DatabasePlaybook(
@@ -325,6 +428,7 @@ class PlaybookService:
             actor_user_id=actor_user_id,
             validation=validation,
             now=now,
+            revision_format=revision_format,
         )
         event = new_audit_event(
             AuditAction.PLAYBOOK_CREATED,
@@ -338,6 +442,8 @@ class PlaybookService:
                 "revision": 1,
                 "size_bytes": revision.size_bytes,
                 "enabled": enabled,
+                "revision_format": revision.revision_format.value,
+                "file_count": len(revision.files),
             },
         )
         async with self._unit_of_work_factory() as unit_of_work:
@@ -355,17 +461,42 @@ class PlaybookService:
         name: str,
         description: str,
         enabled: bool,
-        content: str,
+        content: str | None = None,
+        files: dict[str, str] | None = None,
+        entrypoint: str | None = None,
+        parameter_schema: dict[str, object] | None = None,
+        supports_check_mode: bool = False,
+        actor: SessionPrincipal | None = None,
+        _audit_action: AuditAction = AuditAction.PLAYBOOK_UPDATED,
+        _audit_metadata: dict[str, object] | None = None,
     ) -> DatabasePlaybookDocument:
+        if actor is not None:
+            require_permission(actor, Permission.PLAYBOOK_WRITE)
         self._require_source(PlaybookSource.DATABASE)
         normalized_name = name.strip()
         if not normalized_name:
             raise PlaybookInvalidError("playbook name must not be empty")
-        validation = await self._validate_for_save(
-            content,
-            actor_user_id=actor_user_id,
-            playbook_id=playbook_id,
-        )
+        if (content is None) == (files is None):
+            raise PlaybookInvalidError("provide exactly one legacy content or project files")
+        if content is not None:
+            validation = await self._validate_for_save(
+                content,
+                actor_user_id=actor_user_id,
+                playbook_id=playbook_id,
+            )
+            revision_format = PlaybookRevisionFormat.LEGACY_SINGLE_YAML
+        else:
+            if entrypoint is None:
+                raise PlaybookInvalidError("project entrypoint is required")
+            validation = await self._validate_project_for_save(
+                files or {},
+                entrypoint,
+                parameter_schema,
+                supports_check_mode,
+                actor_user_id=actor_user_id,
+                playbook_id=playbook_id,
+            )
+            revision_format = PlaybookRevisionFormat.PROJECT
         now = utc_now()
         updated: DatabasePlaybookDocument | None = None
         event = None
@@ -393,6 +524,7 @@ class PlaybookService:
                 actor_user_id=actor_user_id,
                 validation=validation,
                 now=now,
+                revision_format=revision_format,
             )
             updated = await unit_of_work.playbooks.update(
                 playbook,
@@ -401,23 +533,28 @@ class PlaybookService:
             )
             if updated is None:
                 raise PlaybookVersionConflictError()
+            metadata: dict[str, object] = {
+                "playbook_source": PlaybookSource.DATABASE.value,
+                "revision_before": current.playbook.current_revision,
+                "revision_after": revision_number,
+                "version_before": expected_version,
+                "version_after": expected_version + 1,
+                "size_bytes": revision.size_bytes,
+                "enabled_before": current.playbook.enabled,
+                "enabled_after": enabled,
+                "revision_format": revision.revision_format.value,
+                "file_count": len(revision.files),
+            }
+            if _audit_metadata:
+                metadata.update(_audit_metadata)
             event = new_audit_event(
-                AuditAction.PLAYBOOK_UPDATED,
+                _audit_action,
                 AuditOutcome.SUCCEEDED,
                 source=AuditSource.API,
                 actor_user_id=actor_user_id,
                 resource_type="playbook",
                 resource_id=playbook_id,
-                metadata={
-                    "playbook_source": PlaybookSource.DATABASE.value,
-                    "revision_before": current.playbook.current_revision,
-                    "revision_after": revision_number,
-                    "version_before": expected_version,
-                    "version_after": expected_version + 1,
-                    "size_bytes": revision.size_bytes,
-                    "enabled_before": current.playbook.enabled,
-                    "enabled_after": enabled,
-                },
+                metadata=metadata,
             )
             await unit_of_work.audit.append(event)
         if updated is None or event is None:
@@ -431,7 +568,10 @@ class PlaybookService:
         *,
         actor_user_id: UUID,
         expected_version: int,
+        actor: SessionPrincipal | None = None,
     ) -> None:
+        if actor is not None:
+            require_permission(actor, Permission.PLAYBOOK_WRITE)
         self._require_source(PlaybookSource.DATABASE)
         now = utc_now()
         event = None
@@ -469,8 +609,14 @@ class PlaybookService:
         emit_audit_event(event)
 
     async def validate_content(
-        self, content: str, *, actor_user_id: UUID
+        self,
+        content: str,
+        *,
+        actor_user_id: UUID,
+        actor: SessionPrincipal | None = None,
     ) -> PlaybookValidationResult:
+        if actor is not None:
+            require_permission(actor, Permission.PLAYBOOK_WRITE)
         self._require_source(PlaybookSource.DATABASE)
         try:
             validation = await self._validator.validate_content(content)
@@ -488,6 +634,194 @@ class PlaybookService:
             size_bytes=validation.size_bytes,
         )
         return validation
+
+    async def validate_project(
+        self,
+        *,
+        files: dict[str, str],
+        entrypoint: str,
+        parameter_schema: dict[str, object] | None,
+        supports_check_mode: bool,
+        actor_user_id: UUID,
+        actor: SessionPrincipal | None = None,
+    ) -> PlaybookValidationResult:
+        if actor is not None:
+            require_permission(actor, Permission.PLAYBOOK_WRITE)
+        self._require_source(PlaybookSource.DATABASE)
+        validation = await self._validator.validate_project(
+            files,
+            entrypoint,
+            parameter_schema,
+            supports_check_mode,
+        )
+        await self._record_validation(
+            valid=validation.valid,
+            actor_user_id=actor_user_id,
+            source=PlaybookSource.DATABASE,
+            size_bytes=validation.size_bytes,
+        )
+        return validation
+
+    async def list_revisions(self, playbook_id: UUID) -> tuple[PlaybookRevision, ...]:
+        self._require_source(PlaybookSource.DATABASE)
+        async with self._unit_of_work_factory() as unit_of_work:
+            if await unit_of_work.playbooks.get_document(playbook_id, include_deleted=True) is None:
+                raise PlaybookNotFoundError()
+            return await unit_of_work.playbooks.list_revisions(playbook_id)
+
+    async def get_revision(self, playbook_id: UUID, revision: int) -> PlaybookRevision:
+        self._require_source(PlaybookSource.DATABASE)
+        async with self._unit_of_work_factory() as unit_of_work:
+            result = await unit_of_work.playbooks.get_revision(playbook_id, revision)
+        if result is None:
+            raise PlaybookNotFoundError("Playbook revision was not found")
+        return result
+
+    @staticmethod
+    def _as_project(revision: PlaybookRevision) -> NormalizedProject:
+        if revision.revision_format is PlaybookRevisionFormat.PROJECT:
+            assert revision.entrypoint is not None
+            return NormalizedProject(
+                revision.files,
+                revision.entrypoint,
+                revision.sha256,
+                revision.size_bytes,
+            )
+        assert revision.content is not None
+        return normalize_project({"playbook.yml": revision.content}, "playbook.yml")
+
+    async def diff_revisions(
+        self,
+        playbook_id: UUID,
+        revision: int,
+        against_revision: int,
+    ) -> dict[str, object]:
+        before = self._as_project(await self.get_revision(playbook_id, against_revision))
+        after = self._as_project(await self.get_revision(playbook_id, revision))
+        before_files = {item.path: item for item in before.files}
+        after_files = {item.path: item for item in after.files}
+        added = sorted(set(after_files) - set(before_files))
+        deleted = sorted(set(before_files) - set(after_files))
+        modified = sorted(
+            path
+            for path in set(before_files) & set(after_files)
+            if before_files[path].sha256 != after_files[path].sha256
+        )
+        lines: list[str] = []
+        for path in sorted(set(added + deleted + modified)):
+            old = (
+                before_files[path].content.splitlines(keepends=True) if path in before_files else []
+            )
+            new = after_files[path].content.splitlines(keepends=True) if path in after_files else []
+            lines.extend(
+                difflib.unified_diff(
+                    old,
+                    new,
+                    fromfile=f"a/{path}",
+                    tofile=f"b/{path}",
+                    n=3,
+                )
+            )
+            if len(lines) > 2000:
+                lines = [*lines[:2000], "\n... diff truncated ...\n"]
+                break
+        text = "".join(lines)
+        if len(text.encode("utf-8")) > 256 * 1024:
+            text = text.encode("utf-8")[: 256 * 1024].decode("utf-8", errors="ignore")
+            text += "\n... diff truncated ...\n"
+        return {
+            "revision": revision,
+            "againstRevision": against_revision,
+            "added": added,
+            "deleted": deleted,
+            "modified": modified,
+            "diff": text,
+        }
+
+    async def restore_revision(
+        self,
+        playbook_id: UUID,
+        revision: int,
+        *,
+        actor_user_id: UUID,
+        expected_version: int,
+        actor: SessionPrincipal | None = None,
+    ) -> DatabasePlaybookDocument:
+        if actor is not None:
+            require_permission(actor, Permission.PLAYBOOK_WRITE)
+        source = await self.get_revision(playbook_id, revision)
+        current = await self.get_database(playbook_id)
+        project = self._as_project(source)
+        restored = await self.update_database(
+            playbook_id,
+            actor_user_id=actor_user_id,
+            expected_version=expected_version,
+            name=current.playbook.name,
+            description=current.playbook.description,
+            enabled=current.playbook.enabled,
+            files={item.path: item.content for item in project.files},
+            entrypoint=project.entrypoint,
+            parameter_schema=source.parameter_schema,
+            supports_check_mode=source.supports_check_mode,
+            _audit_action=AuditAction.PLAYBOOK_REVISION_RESTORED,
+            _audit_metadata={"source_revision": revision},
+        )
+        return restored
+
+    async def import_zip(
+        self,
+        payload: bytes,
+        *,
+        entrypoint: str | None,
+        actor_user_id: UUID,
+        actor: SessionPrincipal | None = None,
+    ) -> NormalizedProject:
+        if actor is not None:
+            require_permission(actor, Permission.PLAYBOOK_WRITE)
+        self._require_source(PlaybookSource.DATABASE)
+        try:
+            project = import_project_zip(payload, entrypoint)
+        except PlaybookInvalidError:
+            await self._record_validation(
+                valid=False,
+                actor_user_id=actor_user_id,
+                source=PlaybookSource.DATABASE,
+            )
+            raise
+        await AuditService(self._unit_of_work_factory).record_best_effort(
+            new_audit_event(
+                AuditAction.PLAYBOOK_IMPORTED,
+                AuditOutcome.SUCCEEDED,
+                source=AuditSource.API,
+                actor_user_id=actor_user_id,
+                resource_type="playbook_draft",
+                metadata={
+                    "file_count": len(project.files),
+                    "size_bytes": project.size_bytes,
+                },
+            )
+        )
+        return project
+
+    async def export_zip(self, playbook_id: UUID, revision: int, *, actor_user_id: UUID) -> bytes:
+        project = self._as_project(await self.get_revision(playbook_id, revision))
+        payload = export_project_zip(project)
+        await AuditService(self._unit_of_work_factory).record_best_effort(
+            new_audit_event(
+                AuditAction.PLAYBOOK_EXPORTED,
+                AuditOutcome.SUCCEEDED,
+                source=AuditSource.API,
+                actor_user_id=actor_user_id,
+                resource_type="playbook",
+                resource_id=playbook_id,
+                metadata={
+                    "revision": revision,
+                    "file_count": len(project.files),
+                    "size_bytes": project.size_bytes,
+                },
+            )
+        )
+        return payload
 
     async def validate_reference(
         self, reference: PlaybookReference, *, actor_user_id: UUID
@@ -511,7 +845,17 @@ class PlaybookService:
         if reference.playbook_id is None:
             raise PlaybookNotFoundError()
         document = await self.get_database(reference.playbook_id)
-        result = await self._validator.validate_content(document.revision.content)
+        if document.revision.revision_format is PlaybookRevisionFormat.PROJECT:
+            assert document.revision.entrypoint is not None
+            result = await self._validator.validate_project(
+                {item.path: item.content for item in document.revision.files},
+                document.revision.entrypoint,
+                document.revision.parameter_schema,
+                document.revision.supports_check_mode,
+            )
+        else:
+            assert document.revision.content is not None
+            result = await self._validator.validate_content(document.revision.content)
         await self._record_validation(
             valid=result.valid,
             actor_user_id=actor_user_id,
@@ -549,6 +893,42 @@ class PlaybookService:
             raise PlaybookInvalidError()
         return validation
 
+    async def _validate_project_for_save(
+        self,
+        files: dict[str, str],
+        entrypoint: str,
+        parameter_schema: dict[str, object] | None,
+        supports_check_mode: bool,
+        *,
+        actor_user_id: UUID,
+        playbook_id: UUID | None,
+    ) -> PlaybookValidationResult:
+        try:
+            validation = await self._validator.validate_project(
+                files,
+                entrypoint,
+                parameter_schema,
+                supports_check_mode,
+            )
+        except PlaybookInvalidError:
+            await self._record_validation(
+                valid=False,
+                actor_user_id=actor_user_id,
+                source=PlaybookSource.DATABASE,
+                playbook_id=playbook_id,
+            )
+            raise
+        if not validation.valid:
+            await self._record_validation(
+                valid=False,
+                actor_user_id=actor_user_id,
+                source=PlaybookSource.DATABASE,
+                playbook_id=playbook_id,
+                size_bytes=validation.size_bytes,
+            )
+            raise PlaybookProjectInvalidError()
+        return validation
+
     @staticmethod
     def _revision(
         *,
@@ -557,14 +937,23 @@ class PlaybookService:
         actor_user_id: UUID,
         validation: PlaybookValidationResult,
         now: datetime,
+        revision_format: PlaybookRevisionFormat = PlaybookRevisionFormat.LEGACY_SINGLE_YAML,
     ) -> PlaybookRevision:
         if (
-            validation.normalized_content is None
-            or validation.sha256 is None
+            validation.sha256 is None
             or validation.size_bytes is None
             or validation.validator_version is None
         ):
             raise RuntimeError("valid Playbook content is missing validation metadata")
+        if (
+            revision_format is PlaybookRevisionFormat.LEGACY_SINGLE_YAML
+            and validation.normalized_content is None
+        ):
+            raise RuntimeError("valid legacy Playbook content is missing")
+        if revision_format is PlaybookRevisionFormat.PROJECT and (
+            not validation.normalized_files or validation.entrypoint is None
+        ):
+            raise RuntimeError("valid Playbook project content is missing")
         return PlaybookRevision(
             playbook_id=playbook_id,
             revision=revision,
@@ -575,6 +964,11 @@ class PlaybookService:
             validated_at=now,
             created_by=actor_user_id,
             created_at=now,
+            revision_format=revision_format,
+            entrypoint=validation.entrypoint,
+            parameter_schema=validation.parameter_schema or validate_parameter_schema(None),
+            supports_check_mode=validation.supports_check_mode,
+            files=validation.normalized_files,
         )
 
     async def _record_validation(

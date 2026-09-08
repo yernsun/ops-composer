@@ -10,8 +10,9 @@ import pytest
 from pydantic import SecretStr
 
 from ops_composer.domain.base import utc_now
+from ops_composer.domain.ops import CredentialType
 from ops_composer.domain.web_shell import WebShellLaunch, WebShellSession, WebShellState
-from ops_composer.ssh_terminal import SshTerminal
+from ops_composer.ssh_terminal import SshTerminal, SshTerminalStartError
 
 
 def _ssh_settings() -> tuple[str, int, str]:
@@ -66,6 +67,24 @@ def _launch(address: str, port: int, password: str, known_hosts: str) -> WebShel
     return WebShellLaunch(
         session=session,
         password=SecretStr(password),
+        known_hosts=known_hosts,
+    )
+
+
+def _private_key_launch(
+    address: str,
+    port: int,
+    private_key: str,
+    passphrase: str,
+    known_hosts: str,
+) -> WebShellLaunch:
+    password_launch = _launch(address, port, "unused", known_hosts)
+    return WebShellLaunch(
+        session=password_launch.session.model_copy(
+            update={"credential_type": CredentialType.SSH_PRIVATE_KEY}
+        ),
+        private_key=SecretStr(private_key),
+        passphrase=SecretStr(passphrase),
         known_hosts=known_hosts,
     )
 
@@ -161,3 +180,38 @@ async def test_real_ssh_wrong_password_fails_closed(tmp_path: Path) -> None:
         assert await asyncio.wait_for(terminal.wait(), timeout=20) == 255
     finally:
         await terminal.close()
+
+
+@pytest.mark.asyncio
+async def test_real_encrypted_private_key_uses_ephemeral_agent_and_cleans_up(
+    tmp_path: Path,
+) -> None:
+    address, port, _password = _ssh_settings()
+    key_path_value = os.getenv("TEST_SSH_PRIVATE_KEY_FILE")
+    passphrase = os.getenv("TEST_SSH_KEY_PASSPHRASE")
+    if not key_path_value or not passphrase:
+        pytest.skip("set the disposable private-key fixture variables")
+    private_key = Path(key_path_value).read_text(encoding="utf-8")
+    known_hosts = await _scan_key(address, port)
+    launch = _private_key_launch(address, port, private_key, passphrase, known_hosts)
+    terminal = await SshTerminal.start(launch, tmp_path)
+    runtime_path = tmp_path / "web-shell" / str(launch.session.web_shell_session_id)
+    try:
+        assert not (runtime_path / "agent" / "identity").exists()
+        await terminal.write(b"printf 'PRIVATE_KEY_READY\\n'\n")
+        output = await _read_until(terminal, b"PRIVATE_KEY_READY\r\n")
+        assert b"PRIVATE_KEY_READY" in output
+    finally:
+        await terminal.close()
+    assert not runtime_path.exists()
+
+    invalid = _private_key_launch(
+        address,
+        port,
+        private_key,
+        "intentionally-wrong-passphrase",
+        known_hosts,
+    )
+    with pytest.raises(SshTerminalStartError):
+        await SshTerminal.start(invalid, tmp_path)
+    assert not (tmp_path / "web-shell" / str(invalid.session.web_shell_session_id)).exists()

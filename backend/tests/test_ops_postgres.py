@@ -14,6 +14,7 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.errors import ObjectNotInPrerequisiteState
 
+from ops_composer.auth.models import SessionPrincipal, UserRole, permissions_for_role
 from ops_composer.auth.service import AuthService
 from ops_composer.db.migration_engine import MigrationRunner
 from ops_composer.db.pool import create_pool
@@ -26,6 +27,7 @@ from ops_composer.domain.errors import (
     NotFoundError,
     PlaybookInvalidError,
     PlaybookVersionConflictError,
+    SecretParametersRequiredError,
     ValidationError,
 )
 from ops_composer.domain.ops import (
@@ -37,7 +39,8 @@ from ops_composer.domain.ops import (
     TargetKind,
 )
 from ops_composer.services.assets import AssetService, CredentialService
-from ops_composer.services.crypto import CredentialCipher
+from ops_composer.services.crypto import CredentialCipher, MasterKeyring
+from ops_composer.services.encryption import EncryptionService
 from ops_composer.services.playbooks import PlaybookService
 from ops_composer.services.runs import RunService, WorkerCoordinator
 from ops_composer.settings import Settings
@@ -217,7 +220,7 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
                 row = await (
                     await connection.execute(
                         sql.SQL(
-                            "SELECT encrypted_secret FROM credential_revisions "
+                            "SELECT encrypted_secret FROM credential_secret_envelopes "
                             "WHERE credential_id = %(credential_id)s"
                         ),
                         {"credential_id": credential.credential_id},
@@ -540,10 +543,28 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
                 enabled=False,
                 content=revision_one_content.replace("revision one", "revision three"),
             )
-            await playbooks.delete_database(
+            history = await playbooks.list_revisions(revision_three.playbook.playbook_id)
+            assert [item.revision for item in history] == [3, 2, 1]
+            legacy_diff = await playbooks.diff_revisions(
                 revision_three.playbook.playbook_id,
+                3,
+                1,
+            )
+            assert legacy_diff["modified"] == ["playbook.yml"]
+            assert "revision three" in legacy_diff["diff"]
+            restored = await playbooks.restore_revision(
+                revision_three.playbook.playbook_id,
+                1,
                 actor_user_id=administrator.user_id,
                 expected_version=revision_three.playbook.version,
+            )
+            assert restored.revision.revision == 4
+            assert restored.revision.revision_format.value == "PROJECT"
+            assert restored.revision.entrypoint == "playbook.yml"
+            await playbooks.delete_database(
+                restored.playbook.playbook_id,
+                actor_user_id=administrator.user_id,
+                expected_version=restored.playbook.version,
             )
             with pytest.raises(NotFoundError):
                 await playbooks.get_database(revision_three.playbook.playbook_id)
@@ -633,7 +654,7 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
                         {"resource_id": str(pinned_run.playbook_id)},
                     )
                 ).fetchone()
-            assert revision_count is not None and revision_count["count"] == 3
+            assert revision_count is not None and revision_count["count"] == 4
             assert audit_payload is not None
             assert "sentinel-database-playbook-content" not in audit_payload["payload"]
             assert "sentinel-database-playbook-content" not in json.dumps(
@@ -662,6 +683,274 @@ async def test_postgresql_queue_idempotency_lease_lock_events_and_rollback(
                                 "revision": pinned_run.playbook_revision,
                             },
                         )
+
+            project_secret = "project-sensitive-value-must-never-leak"
+            project = await playbooks.create_database(
+                actor_user_id=administrator.user_id,
+                name="Database project",
+                description="P2 project integration",
+                enabled=True,
+                files={
+                    "site.yml": (
+                        "---\n- name: Project revision\n  hosts: all\n"
+                        "  gather_facts: false\n  tasks:\n"
+                        "    - ansible.builtin.debug:\n"
+                        "        msg: '{{ environment }}'\n"
+                    ),
+                    "roles/example/tasks/main.yml": "---\n- ansible.builtin.debug:\n    msg: ok\n",
+                },
+                entrypoint="site.yml",
+                parameter_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["environment", "apiToken"],
+                    "properties": {
+                        "environment": {"type": "string", "enum": ["test", "prod"]},
+                        "apiToken": {
+                            "type": "string",
+                            "x-ops-composer-sensitive": True,
+                        },
+                    },
+                },
+                supports_check_mode=True,
+            )
+            exported_project = await playbooks.export_zip(
+                project.playbook.playbook_id,
+                project.revision.revision,
+                actor_user_id=administrator.user_id,
+            )
+            imported_project = await playbooks.import_zip(
+                exported_project,
+                entrypoint=None,
+                actor_user_id=administrator.user_id,
+            )
+            assert imported_project.sha256 == project.revision.sha256
+            assert imported_project.entrypoint == "site.yml"
+            project_validation = await playbooks.validate_reference(
+                PlaybookReference(
+                    source=PlaybookSource.DATABASE,
+                    playbook_id=project.playbook.playbook_id,
+                ),
+                actor_user_id=administrator.user_id,
+            )
+            assert project_validation.valid
+            preview_actor = SessionPrincipal(
+                session_id=uuid4(),
+                user_id=administrator.user_id,
+                username=administrator.username,
+                role=UserRole.OWNER,
+                permissions=permissions_for_role(UserRole.OWNER),
+                mfa_enabled=True,
+                mfa_enrollment_required=False,
+                mfa_verified_at=utc_now(),
+                elevated_until=utc_now() + timedelta(minutes=10),
+                csrf_hash="preview-csrf-hash",
+                expires_at=utc_now() + timedelta(hours=1),
+            )
+            preview = await runs.preview_playbook(
+                actor=preview_actor,
+                target_kind=TargetKind.HOSTS,
+                host_ids=(host.host_id,),
+                group_id=None,
+                playbook=PlaybookReference(
+                    source=PlaybookSource.DATABASE,
+                    playbook_id=project.playbook.playbook_id,
+                ),
+                parameters={"environment": "test", "apiToken": project_secret},
+                check_mode=True,
+                tags=("safe",),
+                skip_tags=(),
+            )
+            assert preview["targetCount"] == 1
+            assert preview["revision"] == 1
+            assert preview["sensitiveParameters"] == [{"name": "apiToken", "supplied": True}]
+            assert project_secret not in json.dumps(preview)
+            project_run = await runs.create_playbook(
+                requested_by=administrator.user_id,
+                idempotency_key="postgres-project-sensitive-run",
+                target_kind=TargetKind.HOSTS,
+                host_ids=(host.host_id,),
+                group_id=None,
+                playbook=PlaybookReference(
+                    source=PlaybookSource.DATABASE,
+                    playbook_id=project.playbook.playbook_id,
+                ),
+                extra_vars={},
+                parameters={"environment": "test", "apiToken": project_secret},
+                check_mode=True,
+                tags=(),
+                skip_tags=(),
+                timeout_seconds=30,
+                forks=1,
+            )
+            assert project_run.request_fingerprint_scheme.value == "HMAC_SHA256_V1"
+            assert project_run.operation_spec["extraVars"] == {"environment": "test"}
+            assert project_secret not in json.dumps(project_run.operation_spec)
+            async with pool.connection() as connection:
+                secret_row = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT encrypted_payload, parameter_names FROM run_secret_inputs "
+                            "WHERE run_id = %(run_id)s"
+                        ),
+                        {"run_id": project_run.run_id},
+                    )
+                ).fetchone()
+                persisted_text = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT operation_spec::text || coalesce((SELECT string_agg("
+                            "metadata::text, '') FROM audit_events WHERE run_id = %(run_id)s), '') "
+                            "AS value FROM runs WHERE run_id = %(run_id)s"
+                        ),
+                        {"run_id": project_run.run_id},
+                    )
+                ).fetchone()
+            assert secret_row is not None
+            assert secret_row["parameter_names"] == ["apiToken"]
+            assert project_secret.encode() not in secret_row["encrypted_payload"]
+            assert persisted_text is not None and project_secret not in persisted_text["value"]
+
+            await runs.cancel(
+                retried_playbook.run_id,
+                requested_by=administrator.user_id,
+            )
+            project_worker = WorkerCoordinator(factory, settings, "worker-project")
+            claimed_project = await project_worker.claim()
+            assert claimed_project is not None
+            assert claimed_project.run_id == project_run.run_id
+
+            def project_execution(
+                _executor,
+                run,
+                *,
+                playbook_path,
+                playbook_project_dir,
+                event_handler,
+                **_kwargs,
+            ):
+                assert playbook_path == playbook_project_dir / "site.yml"
+                assert (playbook_project_dir / "roles/example/tasks/main.yml").is_file()
+                assert run.operation_spec["extraVars"] == {
+                    "environment": "test",
+                    "apiToken": project_secret,
+                }
+                event_handler(
+                    {
+                        "event": "runner_on_ok",
+                        "stdout": f"sensitive={project_secret}",
+                        "event_data": {
+                            "host": host.name,
+                            "res": {"changed": False, "token": project_secret},
+                        },
+                    }
+                )
+                return 0, "successful"
+
+            monkeypatch.setattr(AnsibleExecutor, "run", project_execution)
+            await execute_run(
+                claimed_project,
+                factory=factory,
+                settings=settings,
+                coordinator=project_worker,
+            )
+            assert (await runs.get(project_run.run_id)).status is RunStatus.SUCCEEDED
+            project_events = json.dumps(
+                [
+                    event.model_dump(mode="json")
+                    for event in await runs.events_after(project_run.run_id, 0)
+                ]
+            )
+            assert project_secret not in project_events
+            assert "[REDACTED]" in project_events
+            async with pool.connection() as connection:
+                consumed_secret = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT run_id FROM run_secret_inputs WHERE run_id = %(run_id)s"
+                        ),
+                        {"run_id": project_run.run_id},
+                    )
+                ).fetchone()
+            assert consumed_secret is None
+            with pytest.raises(SecretParametersRequiredError):
+                await runs.retry(
+                    project_run.run_id,
+                    requested_by=administrator.user_id,
+                    idempotency_key="postgres-project-retry-missing-secret",
+                )
+            replacement_secret = "replacement-project-sensitive-value"
+            retried_project = await runs.retry(
+                project_run.run_id,
+                requested_by=administrator.user_id,
+                idempotency_key="postgres-project-retry-with-secret",
+                parameters={"apiToken": replacement_secret},
+            )
+            assert retried_project.source_run_id == project_run.run_id
+            assert replacement_secret not in json.dumps(retried_project.operation_spec)
+
+            owner_actor = SessionPrincipal(
+                session_id=uuid4(),
+                user_id=administrator.user_id,
+                username=administrator.username,
+                role=UserRole.OWNER,
+                permissions=permissions_for_role(UserRole.OWNER),
+                mfa_enabled=True,
+                mfa_enrollment_required=False,
+                mfa_verified_at=utc_now(),
+                elevated_until=utc_now() + timedelta(minutes=10),
+                csrf_hash="integration-csrf-hash",
+                expires_at=utc_now() + timedelta(hours=1),
+            )
+            keyring = MasterKeyring(
+                {
+                    1: base64.b64decode(master_key),
+                    2: b"fedcba9876543210" * 2,
+                },
+                primary_version=2,
+            )
+            encryption = EncryptionService(factory, keyring)
+            await encryption.ensure_keyring()
+            pepper_before = await encryption.idempotency_pepper()
+            before_rotation = await encryption.status(owner_actor)
+            assert before_rotation.primary_version == 2
+            assert {item.key_version for item in before_rotation.usage} == {1, 2}
+            rotation = await encryption.request_rotation(owner_actor)
+            assert rotation.remaining_count is not None and rotation.remaining_count > 0
+            processed_batches = 0
+            while await encryption.process_rotation_batch("rotation-worker"):
+                processed_batches += 1
+                if processed_batches > 10:
+                    raise AssertionError("key rotation did not converge")
+            assert processed_batches >= 3
+            after_rotation = await encryption.status(owner_actor)
+            assert after_rotation.latest_job is not None
+            assert after_rotation.latest_job.state.value == "SUCCEEDED"
+            assert all(
+                item.total_count == 0
+                for item in after_rotation.usage
+                if item.key_version == 1
+            )
+            assert await encryption.idempotency_pepper() == pepper_before
+            rotated_credentials = CredentialService(factory, CredentialCipher(keyring))
+            assert (
+                await rotated_credentials.decrypt_revision(credential.credential_id, 2)
+            )["password"] == "rotated-database-secret"
+            with pytest.raises(ObjectNotInPrerequisiteState):
+                async with pool.connection() as connection:
+                    await connection.execute(
+                        sql.SQL(
+                            "UPDATE playbook_revision_files SET content = %(content)s "
+                            "WHERE playbook_id = %(playbook_id)s AND revision = %(revision)s "
+                            "AND path = %(path)s"
+                        ),
+                        {
+                            "content": "---\n- hosts: all\n",
+                            "playbook_id": project.playbook.playbook_id,
+                            "revision": project.revision.revision,
+                            "path": "site.yml",
+                        },
+                    )
         finally:
             await pool.close()
     finally:

@@ -43,7 +43,7 @@ def _resolved(row: RepositoryRow) -> ResolvedHost:
 
 CREDENTIAL_COLUMNS = sql.SQL(
     "credential_id, name, credential_type, username, public_config, current_version, "
-    "enabled, description, deleted_at, created_at, updated_at"
+    "lock_version, enabled, description, deleted_at, created_at, updated_at"
 )
 HOST_COLUMNS = sql.SQL(
     "host_id, name, address, ssh_port, credential_id, python_interpreter, enabled, "
@@ -62,6 +62,12 @@ class AssetRepository(BaseRepository, Protocol):
     async def rotate_credential(
         self, credential_id: UUID, revision: CredentialRevision, now: datetime
     ) -> Credential | None: ...
+    async def update_credential_metadata(
+        self, credential: Credential, expected_lock_version: int
+    ) -> Credential | None: ...
+    async def list_credential_revisions(
+        self, credential_id: UUID
+    ) -> tuple[CredentialRevision, ...]: ...
     async def get_credential_revision(
         self, credential_id: UUID, version: int
     ) -> CredentialRevision | None: ...
@@ -127,9 +133,11 @@ class PostgresAssetRepository(BaseRepository):
                 sql.SQL(
                     "INSERT INTO credentials (credential_id, name, credential_type, username, "
                     "public_config, current_version, enabled, description, deleted_at, "
+                    "lock_version, "
                     "created_at, updated_at) VALUES (%(credential_id)s, %(name)s, "
                     "%(credential_type)s, %(username)s, %(public_config)s, "
                     "%(current_version)s, %(enabled)s, %(description)s, %(deleted_at)s, "
+                    "%(lock_version)s, "
                     "%(created_at)s, %(updated_at)s) RETURNING {}"
                 ).format(CREDENTIAL_COLUMNS),
                 values,
@@ -141,9 +149,18 @@ class PostgresAssetRepository(BaseRepository):
             raise RuntimeError("credential insert returned no row")
         await self.connection.execute(
             sql.SQL(
-                "INSERT INTO credential_revisions (credential_id, version, encrypted_secret, "
-                "encryption_key_version, created_at) VALUES (%(credential_id)s, %(version)s, "
-                "%(encrypted_secret)s, %(encryption_key_version)s, %(created_at)s)"
+                "INSERT INTO credential_revisions (credential_id, version, created_at) "
+                "VALUES (%(credential_id)s, %(version)s, %(created_at)s)"
+            ),
+            revision.model_dump(mode="python"),
+            prepare=True,
+        )
+        await self.connection.execute(
+            sql.SQL(
+                "INSERT INTO credential_secret_envelopes (credential_id, revision, "
+                "encrypted_secret, encryption_key_version, updated_at) VALUES ("
+                "%(credential_id)s, %(version)s, %(encrypted_secret)s, "
+                "%(encryption_key_version)s, %(created_at)s)"
             ),
             revision.model_dump(mode="python"),
             prepare=True,
@@ -155,16 +172,26 @@ class PostgresAssetRepository(BaseRepository):
     ) -> Credential | None:
         await self.connection.execute(
             sql.SQL(
-                "INSERT INTO credential_revisions (credential_id, version, encrypted_secret, "
-                "encryption_key_version, created_at) VALUES (%(credential_id)s, %(version)s, "
-                "%(encrypted_secret)s, %(encryption_key_version)s, %(created_at)s)"
+                "INSERT INTO credential_revisions (credential_id, version, created_at) "
+                "VALUES (%(credential_id)s, %(version)s, %(created_at)s)"
+            ),
+            revision.model_dump(mode="python"),
+            prepare=True,
+        )
+        await self.connection.execute(
+            sql.SQL(
+                "INSERT INTO credential_secret_envelopes (credential_id, revision, "
+                "encrypted_secret, encryption_key_version, updated_at) VALUES ("
+                "%(credential_id)s, %(version)s, %(encrypted_secret)s, "
+                "%(encryption_key_version)s, %(created_at)s)"
             ),
             revision.model_dump(mode="python"),
             prepare=True,
         )
         row = await self.connection.fetch_one(
             sql.SQL(
-                "UPDATE credentials SET current_version = %(version)s, updated_at = %(now)s "
+                "UPDATE credentials SET current_version = %(version)s, "
+                "lock_version = lock_version + 1, updated_at = %(now)s "
                 "WHERE credential_id = %(credential_id)s AND deleted_at IS NULL RETURNING {}"
             ).format(CREDENTIAL_COLUMNS),
             {"credential_id": credential_id, "version": revision.version, "now": now},
@@ -172,19 +199,60 @@ class PostgresAssetRepository(BaseRepository):
         )
         return _credential(row) if row is not None else None
 
+    async def update_credential_metadata(
+        self, credential: Credential, expected_lock_version: int
+    ) -> Credential | None:
+        values = credential.model_dump(mode="python")
+        values["public_config"] = Jsonb(values["public_config"])
+        values["expected_lock_version"] = expected_lock_version
+        try:
+            row = await self.connection.fetch_one(
+                sql.SQL(
+                    "UPDATE credentials SET name = %(name)s, username = %(username)s, "
+                    "public_config = %(public_config)s, enabled = %(enabled)s, "
+                    "description = %(description)s, lock_version = lock_version + 1, "
+                    "updated_at = %(updated_at)s WHERE credential_id = %(credential_id)s "
+                    "AND deleted_at IS NULL AND lock_version = %(expected_lock_version)s "
+                    "RETURNING {}"
+                ).format(CREDENTIAL_COLUMNS),
+                values,
+                prepare=True,
+            )
+        except UniqueViolation as error:
+            raise ConflictError("credential name already exists") from error
+        return _credential(row) if row is not None else None
+
     async def get_credential_revision(
         self, credential_id: UUID, version: int
     ) -> CredentialRevision | None:
         row = await self.connection.fetch_one(
             sql.SQL(
-                "SELECT credential_id, version, encrypted_secret, encryption_key_version, "
-                "created_at FROM credential_revisions WHERE credential_id = %(credential_id)s "
-                "AND version = %(version)s"
+                "SELECT r.credential_id, r.version, e.encrypted_secret, "
+                "e.encryption_key_version, r.created_at FROM credential_revisions r "
+                "JOIN credential_secret_envelopes e ON e.credential_id = r.credential_id "
+                "AND e.revision = r.version WHERE r.credential_id = %(credential_id)s "
+                "AND r.version = %(version)s"
             ),
             {"credential_id": credential_id, "version": version},
             prepare=True,
         )
         return _revision(row) if row is not None else None
+
+    async def list_credential_revisions(
+        self, credential_id: UUID
+    ) -> tuple[CredentialRevision, ...]:
+        rows = await self.connection.fetch_all(
+            sql.SQL(
+                "SELECT r.credential_id, r.version, e.encrypted_secret, "
+                "e.encryption_key_version, r.created_at FROM credential_revisions r "
+                "JOIN credential_secret_envelopes e ON e.credential_id = r.credential_id "
+                "AND e.revision = r.version WHERE r.credential_id = %(credential_id)s "
+                "ORDER BY r.version DESC"
+            ),
+            {"credential_id": credential_id},
+            prepare=True,
+        )
+        return tuple(_revision(row) for row in rows)
 
     async def delete_credential(self, credential_id: UUID, now: datetime) -> bool:
         count = await self.connection.execute(
@@ -362,7 +430,8 @@ class PostgresAssetRepository(BaseRepository):
         rows = await self.connection.fetch_all(
             sql.SQL(
                 "SELECT h.host_id, h.name, h.address, h.ssh_port, h.credential_id, "
-                "c.current_version AS credential_version, c.username AS credential_username, "
+                "c.current_version AS credential_version, c.credential_type, "
+                "c.username AS credential_username, "
                 "c.public_config AS credential_public_config, h.python_interpreter, "
                 "h.variables AS host_variables, '{}'::jsonb AS group_variables "
                 "FROM hosts h JOIN credentials c ON c.credential_id = h.credential_id "
@@ -377,7 +446,8 @@ class PostgresAssetRepository(BaseRepository):
         rows = await self.connection.fetch_all(
             sql.SQL(
                 "SELECT h.host_id, h.name, h.address, h.ssh_port, h.credential_id, "
-                "c.current_version AS credential_version, c.username AS credential_username, "
+                "c.current_version AS credential_version, c.credential_type, "
+                "c.username AS credential_username, "
                 "c.public_config AS credential_public_config, h.python_interpreter, "
                 "h.variables AS host_variables, '{}'::jsonb AS group_variables "
                 "FROM hosts h JOIN credentials c ON c.credential_id = h.credential_id "
@@ -393,7 +463,8 @@ class PostgresAssetRepository(BaseRepository):
         rows = await self.connection.fetch_all(
             sql.SQL(
                 "SELECT h.host_id, h.name, h.address, h.ssh_port, h.credential_id, "
-                "c.current_version AS credential_version, c.username AS credential_username, "
+                "c.current_version AS credential_version, c.credential_type, "
+                "c.username AS credential_username, "
                 "c.public_config AS credential_public_config, h.python_interpreter, "
                 "h.variables AS host_variables, "
                 "g.variables AS group_variables FROM host_groups g "

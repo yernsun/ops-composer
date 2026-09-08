@@ -6,7 +6,7 @@
 - **仓库名称**：`ops-composer`
 - **Python 包名**：`ops_composer`
 - **CLI 命令**：`ops-composer`
-- **文档状态**：Implemented / M1 + database Playbook revisions + Web Shell PTY
+- **文档状态**：Implemented / P2 governance + credential keyring + Playbook projects
 - **目标部署形态**：本地 Docker 部署，远程管理物理机或虚拟机集群
 - **执行内核**：Ansible Core + Ansible Runner
 
@@ -40,6 +40,10 @@
 - [24. 测试与验收场景](#24-测试与验收场景)
 - [25. 关键不变量](#25-关键不变量)
 - [26. 最终冻结边界](#26-最终冻结边界)
+- [27. P2 治理与安全增强](#27-p2-治理与安全增强)
+
+> 第 1–26 节保留 M1 的设计背景。涉及管理员数量、Credential 类型、数据库 Playbook
+> 形态、审计访问或 Master Key 的旧限制时，以第 27 节的 P2 规范为准。
 
 ---
 
@@ -2898,3 +2902,144 @@ Host + Group + Credential
 ```
 
 健康检查、持续监控和告警明确放到后续独立阶段，不进入当前 M1 设计范围。
+
+---
+
+## 27. P2 治理与安全增强
+
+P2 不改变低依赖架构：PostgreSQL 仍同时承担业务存储、队列、Lease、锁、事件、审计、限流和
+Key Rotation Job；不引入 Redis、邮件、SSO、Vault、KMS、对象存储或审批服务。API、Worker 与
+Migration 必须作为同一版本协调发布。以下内容取代本文中对应的 M1 单管理员、PASSWORD-only 和
+单 YAML 限制。
+
+### 27.1 多管理员、RBAC 与 MFA
+
+固定角色为 `OWNER | ADMIN | OPERATOR | AUDITOR`，状态为
+`PENDING_ACTIVATION | ACTIVE | DISABLED`。Bootstrap 创建第一个 OWNER；已有管理员迁移为
+OWNER、撤销全部旧 Session，并在下次密码登录强制 TOTP 注册。OWNER 创建用户后返回仅展示一次、
+数据库仅保存 SHA-256 哈希的 24 小时激活码；用户通过激活入口自行设置 Argon2id 密码。
+
+OWNER/ADMIN 强制使用 RFC 6238 TOTP（SHA-1、6 位、30 秒、±1 时间窗），OPERATOR/AUDITOR 可选。
+Seed 使用 Master Keyring 加密；最后接受时间步原子更新以阻止重放。每次注册生成 10 个高熵、
+仅展示一次且逐个哈希保存的恢复码。角色、状态、密码或 MFA 变化立即撤销该用户 Session。
+
+`Permission` 是唯一权限来源，API dependency 和 Service 都必须校验；前端只据此隐藏不可用操作。
+权限矩阵如下：
+
+| 能力 | OWNER | ADMIN | OPERATOR | AUDITOR |
+|---|---:|---:|---:|---:|
+| 查看资产、Credential 元数据、Playbook、Run | ✓ | ✓ | ✓ | ✓ |
+| 管理 Host、Group、Host Key | ✓ | ✓ | — | — |
+| 管理 Credential | ✓（再认证） | ✓（再认证） | — | — |
+| 管理数据库 Playbook | ✓ | ✓ | — | — |
+| Ping、Command、Playbook、Check Mode | ✓ | ✓ | ✓ | — |
+| Shell Run、Web Shell | ✓ | ✓ | — | — |
+| 取消 Run | ✓ | ✓ | ✓ | — |
+| 审计查询与 JSONL 导出 | ✓ | ✓ | — | ✓ |
+| 用户治理、MFA 重置、Key 轮换 | ✓（再认证） | — | — | — |
+
+用户治理、Credential 写操作和 Master Key 轮换要求当前 Session 在最近 10 分钟完成密码加
+TOTP/恢复码再认证。用户禁止硬删除；延迟约束触发器与事务 advisory lock 保证并发变更后仍至少
+存在一个 ACTIVE OWNER。OWNER 不能为自己执行普通 MFA 重置；唯一 OWNER 丢失因子时只能使用带
+固定确认短语、撤销 Session 并写入完整审计的 `ops-composer admin mfa-reset`。
+
+### 27.2 SSH 私钥 Credential 与 Master Keyring
+
+Credential 支持 `PASSWORD | SSH_PRIVATE_KEY`。SSH_PRIVATE_KEY 接受无口令或有口令的
+OpenSSH/PEM Ed25519、RSA（至少 2048 位）和 NIST ECDSA，拒绝 DSA、未知算法、损坏内容和错误
+口令。API 只返回用户名、算法、位数、公钥指纹、是否口令/Become Password 等元数据，从不返回
+密码、私钥、口令、密文或 TOTP Seed。秘密变化创建不可变业务 revision；可重加密 envelope 与
+revision 分离，因此密钥轮换不改变 Run/Web Shell 固定的 revision。
+
+Worker 和 Web Shell 为每个私钥执行启动隔离 `ssh-agent`。运行目录为 `0700`、私钥文件为
+`0600`；口令通过匿名 pipe 和受控 askpass helper 注入，不进入 argv、持久环境、日志或数据库
+明文。无论成功、失败、取消、连接断开或启动恢复，都终止进程组并删除 Agent Socket 和目录。
+
+`OPS_COMPOSER_MASTER_KEYRING_FILE` 指向权限必须为 `0400/0600` 的只读 JSON：
+
+```json
+{"primaryVersion": 2, "keys": {"1": "<base64-32-byte-key>", "2": "<base64-32-byte-key>"}}
+```
+
+兼容周期内可以改用现有 `OPS_COMPOSER_MASTER_KEY` 加版本构造单 Key Keyring，但两种机制同时配置
+必须启动失败。数据库只保存各版本验证 envelope 与使用量，不保存 Key；缺少任何仍被 Credential、
+TOTP、系统秘密或未消费 Run 敏感参数引用的版本时 fail closed。所有新写入使用 Primary Key。
+
+OWNER 在 System 页面发起轮换。Worker 通过 PostgreSQL Job、Lease、advisory lock 和
+`FOR UPDATE SKIP LOCKED` 小批次重加密；失败 Job 保留安全错误码，可由 OWNER 重新发起并从剩余
+envelope 继续，旧 Key 使用量归零前不得从部署文件移除。稳定、加密的 idempotency pepper 通过
+HMAC-SHA-256 计算含敏感参数的请求指纹；轮换只改变 pepper envelope，不改变 pepper 值。
+
+### 27.3 数据库多文件 Playbook
+
+Revision 格式为 `LEGACY_SINGLE_YAML | PROJECT`。历史单 YAML 永久可执行；第一次用新版编辑器
+保存时将其作为虚拟 `playbook.yml` 提交成新 PROJECT revision，不改写历史。PROJECT revision
+保存唯一 YAML entrypoint、参数 Schema、Check Mode 声明、规范化摘要及不可变文件集合。
+
+安全限制：每项目最多 256 个文件、10 MiB；单文件 1 MiB；路径 512 字符、深度 16；仅接受 LF
+规范化 UTF-8 文本。拒绝 NUL、绝对路径、反斜杠、`.`/`..`、控制字符、大小写折叠重复路径、
+符号链接和可执行文件。允许普通 YAML 及 `roles/{tasks,handlers,templates,files,vars,defaults,meta}`、
+`group_vars`、`host_vars`；拒绝 `ansible.cfg`、inventory、`.git/.ssh`、`library`、
+`module_utils`、自定义 plugin 目录、项目内 collections 和在线依赖下载。校验在隔离 `0700`
+目录物化全树，以受控 Ansible 配置执行 YAML 根检查和和 `ansible-playbook --syntax-check`。
+
+ZIP 导入先预检再按流读取，禁止 `extractall`；限制文件数、实际解压字节、压缩比、加密条目、
+重复路径、路径穿越、符号链接与特殊文件。导入只返回浏览器 Draft，验证并保存后才入库；无
+manifest 时必须显式选择 entrypoint。导出以固定时间戳、排序和权限生成确定性 ZIP 与 manifest。
+Revision 页面提供受限 unified diff、文件增删改摘要和“恢复为新 revision”；恢复也必须用当前
+验证器重新校验，并与恢复审计在同一事务提交。
+
+参数只接受根对象且 `additionalProperties=false` 的 JSON Schema 子集，字段类型为
+string/integer/number/boolean，可使用 required、enum、description、default 和数值/长度范围。
+`x-ops-composer-sensitive` 仅可用于无默认值 string。非敏感参数进入固定 Run 快照；敏感参数以
+Keyring 加密进入 `run_secret_inputs`，绝不出现在 `operation_spec`、响应、日志、审计或
+RunEvent。Worker 在 PREPARING 以 `DELETE … RETURNING` 原子消费；消费后无法继续时 Run 必须为
+INTERRUPTED，Retry 必须重新输入敏感字段。Redactor 在 Ansible 结构化事件和 stdout/stderr
+持久化或 SSE 发送之前同时处理 Credential 与 Run 敏感值。
+
+Run Preview 仅返回目标数、固定 revision/digest、Check Mode、标签、参数名和敏感字段是否已
+填写。`checkMode` 只有 revision 声明支持时才允许；创建和 Retry 都重新检查当前角色、来源模式、
+Schema 和必填敏感字段。一个发布周期内旧单 YAML 写入、`playbookPath` 和 `extraVars` 仍兼容；
+新旧字段同时提交返回 422，兼容响应携带弃用与 Sunset Header。
+
+### 27.4 P2 API、页面、Migration 与不变量
+
+Migration 顺序固定为：
+
+```text
+0070_multi_admin_governance
+0080_credential_keyring
+0090_playbook_projects
+```
+
+新增 API 覆盖激活、MFA enrollment/challenge/recovery、再认证、个人安全、用户治理、Credential
+判别联合与 revision 元数据、Keyring 用量/轮换、Playbook project/revision/diff/restore/ZIP、Run
+Preview，以及只读审计分页/JSONL 导出。激活码、Seed、恢复码、Playbook 内容和导出响应使用
+`Cache-Control: no-store`。稳定错误包括 `permission_denied`、`reauthentication_required`、
+`mfa_required`、`activation_expired`、`last_owner_required`、`key_version_missing`、
+`key_rotation_in_progress`、`playbook_project_invalid`、`secret_parameters_required` 和
+`version_conflict`。
+
+PrimeVue 页面增加用户治理、激活/MFA、个人安全、审计和 Key Rotation；Playbook 编辑器使用
+Tree、Splitter、Tabs、Textarea 和 FileUpload 管理完整工作副本，并在离开未保存内容时确认。
+所有服务端状态继续由 Vue Query 管理，权限变化或 API 403 后立即刷新 Session。Credential
+私钥只在浏览器本地读取，提交完成或失败后立即清空表单内存与文件输入。
+
+P2 新增不变量：
+
+```text
+INV-22 API 与 Service 必须对同一 Permission 执行授权。
+INV-23 任意提交后必须至少存在一个 ACTIVE OWNER；用户不得硬删除。
+INV-24 TOTP 时间步和恢复码只能成功消费一次。
+INV-25 Credential 业务 revision 不因 envelope 重加密改变。
+INV-26 缺少仍被引用的 Key 版本时 API/Worker 必须 fail closed。
+INV-27 Playbook revision 与文件禁止原地更新或删除。
+INV-28 Run 创建后固定数据库 Playbook revision；后续编辑、禁用和软删除不得改变它。
+INV-29 敏感参数不得进入 operation_spec、API、日志、审计、RunEvent 或 SSE。
+INV-30 敏感参数 DELETE RETURNING 消费后无法恢复时，Run 只能 INTERRUPTED。
+INV-31 ZIP 导入不得调用 extractall，且必须以实际解压字节实施限制。
+INV-32 Shell/Web Shell 仅 OWNER/ADMIN 可用；AUDITOR 不得执行写操作。
+```
+
+P2 仍明确不实现审批流、资源级 ACL、邮件、SSO、外部秘密管理、自定义角色、会话录像、二进制
+Playbook 文件、自定义 Ansible/Python plugin 或在线依赖安装。

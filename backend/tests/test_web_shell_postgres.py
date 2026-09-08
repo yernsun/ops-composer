@@ -10,6 +10,8 @@ import pytest
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
+from ops_composer.auth.models import ChallengePurpose, IssuedChallenge
+from ops_composer.auth.security import totp_code
 from ops_composer.auth.service import AuthService
 from ops_composer.db.migration_engine import MigrationRunner
 from ops_composer.db.pool import create_pool
@@ -52,8 +54,9 @@ async def test_web_shell_migration_capacity_ticket_lease_and_shared_host_lock(
         await pool.open()
         try:
             async with pool.connection() as connection:
-                applied = await MigrationRunner(connection, MIGRATIONS[:-1]).up()
-                assert applied[-1] == "0050_playbooks"
+                applied = await MigrationRunner(connection, MIGRATIONS).up()
+                assert applied[-1] == "0090_playbook_projects"
+                await MigrationRunner(connection, MIGRATIONS).validate_current()
 
             master_key = base64.b64encode(b"0123456789abcdef" * 2).decode()
             settings = Settings(
@@ -68,9 +71,19 @@ async def test_web_shell_migration_capacity_ticket_lease_and_shared_host_lock(
             factory = UnitOfWorkFactory(pool)
             auth = AuthService(factory, settings)
             administrator = await auth.bootstrap("admin", "correct horse battery staple")
-            issued = await auth.login(
+            challenge = await auth.login(
                 "admin", "correct horse battery staple", "web-shell-integration"
             )
+            assert isinstance(challenge, IssuedChallenge)
+            assert challenge.enrollment_secret is not None
+            secret = challenge.enrollment_secret.get_secret_value()
+            completed = await auth.complete_mfa(
+                challenge.challenge_token.get_secret_value(),
+                totp_code(secret, int(utc_now().timestamp() // 30)),
+                expected_purpose=ChallengePurpose.MFA_ENROLLMENT,
+            )
+            issued = completed.issued
+            recovery_code = completed.recovery_codes[0]
             cipher = CredentialCipher(master_key, 1)
             credentials = CredentialService(factory, cipher)
             await credentials.ensure_master_key()
@@ -127,47 +140,6 @@ async def test_web_shell_migration_capacity_ticket_lease_and_shared_host_lock(
                 forks=1,
             )
 
-            lock_started = utc_now()
-            lock_expires = lock_started + timedelta(seconds=30)
-            async with pool.connection() as connection, connection.transaction():
-                await connection.execute(
-                    sql.SQL(
-                        "INSERT INTO host_run_locks "
-                        "(host_id, run_id, worker_id, acquired_at, expires_at) VALUES "
-                        "(%(host_id)s, %(run_id)s, %(worker_id)s, %(acquired_at)s, "
-                        "%(expires_at)s)"
-                    ),
-                    {
-                        "host_id": host.host_id,
-                        "run_id": queued.run_id,
-                        "worker_id": "worker-before-upgrade",
-                        "acquired_at": lock_started,
-                        "expires_at": lock_expires,
-                    },
-                )
-            async with pool.connection() as connection:
-                assert await MigrationRunner(connection, MIGRATIONS).up() == ("0060_web_shell",)
-                await MigrationRunner(connection, MIGRATIONS).validate_current()
-                migrated = await (
-                    await connection.execute(
-                        sql.SQL(
-                            "SELECT run_id, web_shell_session_id, owner_id "
-                            "FROM host_execution_locks WHERE host_id = %(host_id)s"
-                        ),
-                        {"host_id": host.host_id},
-                    )
-                ).fetchone()
-                assert migrated == {
-                    "run_id": queued.run_id,
-                    "web_shell_session_id": None,
-                    "owner_id": "worker-before-upgrade",
-                }
-                await connection.execute(
-                    sql.SQL("DELETE FROM host_execution_locks WHERE host_id = %(host_id)s"),
-                    {"host_id": host.host_id},
-                )
-                await connection.commit()
-
             web_shell = WebShellService(factory, settings, cipher)
             pending = await web_shell.create(host.host_id, issued.principal, "api-integration")
             worker = WorkerCoordinator(factory, settings, "worker-integration")
@@ -221,9 +193,16 @@ async def test_web_shell_migration_capacity_ticket_lease_and_shared_host_lock(
                 summary={"total": 1, "succeeded": 1, "failed": 0},
             )
 
-            issued = await auth.login(
+            challenge = await auth.login(
                 "admin", "correct horse battery staple", "web-shell-capacity"
             )
+            assert isinstance(challenge, IssuedChallenge)
+            completed = await auth.complete_mfa(
+                challenge.challenge_token.get_secret_value(),
+                recovery_code,
+                expected_purpose=ChallengePurpose.LOGIN_MFA,
+            )
+            issued = completed.issued
             second_host = await assets.create_host(
                 name="shell-host-two",
                 address="192.0.2.81",

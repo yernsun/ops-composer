@@ -3,6 +3,7 @@ import { computed, onMounted, onScopeDispose } from 'vue'
 
 import {
   AUTH_UNAUTHORIZED_EVENT,
+  AUTH_PERMISSIONS_CHANGED_EVENT,
   ApiRequestError,
   api,
   type SessionDto,
@@ -56,8 +57,18 @@ export function useSessionState() {
     queryClient.removeQueries({ predicate: ({ queryKey }) => queryKey[0] !== 'auth' })
   }
 
-  onMounted(() => window.addEventListener(AUTH_UNAUTHORIZED_EVENT, markGuest))
-  onScopeDispose(() => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, markGuest))
+  function refreshPermissions(): void {
+    void queryClient.invalidateQueries({ queryKey: authQueryKeys.session })
+  }
+
+  onMounted(() => {
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, markGuest)
+    window.addEventListener(AUTH_PERMISSIONS_CHANGED_EVENT, refreshPermissions)
+  })
+  onScopeDispose(() => {
+    window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, markGuest)
+    window.removeEventListener(AUTH_PERMISSIONS_CHANGED_EVENT, refreshPermissions)
+  })
 
   return { sessionQuery, session, state, markGuest }
 }

@@ -20,6 +20,9 @@ test('database and mounted Playbooks render and a database Playbook can be valid
     size: content.length,
     modifiedAt: timestamp,
     sha256: 'c'.repeat(64),
+    entrypoint: 'playbook.yml',
+    revisionFormat: 'PROJECT',
+    supportsCheckMode: true,
   }
   const mountedSummary = {
     source: 'MOUNT',
@@ -34,6 +37,9 @@ test('database and mounted Playbooks render and a database Playbook can be valid
     size: 64,
     modifiedAt: timestamp,
     sha256: 'd'.repeat(64),
+    entrypoint: 'playbooks/status.yml',
+    revisionFormat: 'LEGACY_SINGLE_YAML',
+    supportsCheckMode: false,
   }
 
   await page.route('**/api/v1/**', async (route) => {
@@ -46,6 +52,25 @@ test('database and mounted Playbooks render and a database Playbook can be valid
           userId: '00000000-0000-4000-8000-000000000001',
           username: 'admin',
           expiresAt: '2099-09-05T00:00:00Z',
+          role: 'OWNER',
+          permissions: [
+            'asset:read',
+            'asset:write',
+            'credential:write',
+            'playbook:write',
+            'run:standard',
+            'run:shell',
+            'run:cancel',
+            'web-shell:open',
+            'audit:read',
+            'user:read',
+            'user:manage',
+            'key:rotate',
+          ],
+          mfaEnabled: true,
+          mfaEnrollmentRequired: false,
+          mfaVerifiedAt: timestamp,
+          elevatedUntil: '2099-09-05T00:10:00Z',
         }),
       })
       return
@@ -88,7 +113,15 @@ test('database and mounted Playbooks render and a database Playbook can be valid
           name: createPayload.name,
           revision: 1,
           version: 1,
-          content: createPayload.content,
+          files: (createPayload.files as Array<{ path: string; content: string }>).map((file) => ({
+            ...file,
+            sha256: 'e'.repeat(64),
+            sizeBytes: file.content.length,
+          })),
+          entrypoint: createPayload.entrypoint,
+          parameterSchema: createPayload.parameterSchema,
+          revisionFormat: 'PROJECT',
+          supportsCheckMode: createPayload.supportsCheckMode,
           validatorVersion: 'ansible-core test',
           validatedAt: timestamp,
         }),
@@ -105,8 +138,9 @@ test('database and mounted Playbooks render and a database Playbook can be valid
 
   await page.getByRole('button', { name: 'New Playbook' }).click()
   const dialog = page.getByRole('dialog', { name: 'New database Playbook' })
+  await dialog.locator('textarea.playbook-editor').fill(content)
+  await dialog.getByRole('tab', { name: 'Project settings and parameters' }).click()
   await dialog.getByLabel('Name').fill('Created in browser')
-  await dialog.getByLabel('Playbook YAML').fill(content)
   await dialog.getByRole('button', { name: 'Syntax check' }).click()
   await expect(dialog.getByText('syntax check passed')).toBeVisible()
   await dialog.getByRole('button', { name: 'Save' }).click()
@@ -114,7 +148,10 @@ test('database and mounted Playbooks render and a database Playbook can be valid
   await expect.poll(() => createPayload).not.toBeNull()
   expect(createPayload).toMatchObject({
     name: 'Created in browser',
-    content,
+    files: [{ path: 'playbook.yml', content }],
+    entrypoint: 'playbook.yml',
+    parameterSchema: { type: 'object', properties: {}, additionalProperties: false },
+    supportsCheckMode: false,
     enabled: true,
   })
 })

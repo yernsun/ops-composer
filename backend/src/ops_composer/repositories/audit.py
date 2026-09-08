@@ -59,18 +59,14 @@ class PostgresAuditRepository(BaseRepository):
 
     async def list_events(self, query: AuditQuery) -> tuple[AuditEvent, ...]:
         filters = SqlPredicateBuilder()
-        filters.add_greater_than_or_equal(
-            sql.Identifier("occurred_at"), "audit_since", query.since
-        )
+        filters.add_greater_than_or_equal(sql.Identifier("occurred_at"), "audit_since", query.since)
         if query.until is not None:
             filters.add(
                 sql.SQL("occurred_at < %(audit_until)s"),
                 {"audit_until": query.until},
             )
         if query.action is not None:
-            filters.add_equals(
-                sql.Identifier("event_action"), "audit_action", query.action.value
-            )
+            filters.add_equals(sql.Identifier("event_action"), "audit_action", query.action.value)
         if query.outcome is not None:
             filters.add_equals(
                 sql.Identifier("event_outcome"), "audit_outcome", query.outcome.value
@@ -96,9 +92,7 @@ class PostgresAuditRepository(BaseRepository):
                 sql.Identifier("resource_id"), "audit_resource_id", query.resource_id
             )
         if query.error_code is not None:
-            filters.add_equals(
-                sql.Identifier("error_code"), "audit_error_code", query.error_code
-            )
+            filters.add_equals(sql.Identifier("error_code"), "audit_error_code", query.error_code)
         if query.before_id is not None:
             filters.add(
                 sql.SQL(
@@ -121,8 +115,7 @@ class PostgresAuditRepository(BaseRepository):
     async def count_before(self, cutoff: datetime) -> int:
         row = await self.connection.fetch_one(
             sql.SQL(
-                "SELECT count(*) AS count FROM audit_events "
-                "WHERE occurred_at < %(audit_cutoff)s"
+                "SELECT count(*) AS count FROM audit_events WHERE occurred_at < %(audit_cutoff)s"
             ),
             {"audit_cutoff": cutoff},
             prepare=True,

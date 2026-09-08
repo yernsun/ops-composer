@@ -6,6 +6,7 @@ services:
       context: ./infra/ssh-test
     environment:
       TEST_SSH_PASSWORD: ${TEST_SSH_PASSWORD:?set a disposable SSH test password}
+      TEST_SSH_KEY_PASSPHRASE: ${TEST_SSH_KEY_PASSPHRASE:?set a disposable SSH test key passphrase}
     ports:
       - "127.0.0.1:${TEST_SSH_PORT:-22222}:22"
     healthcheck:
@@ -13,3 +14,19 @@ services:
       interval: 2s
       timeout: 2s
       retries: 20
+    volumes:
+      - ssh-test-fixture:/fixture
+
+  test-runner:
+    image: ${OPS_COMPOSER_IMAGE:-ops-composer:local}
+    profiles: ["acceptance"]
+    depends_on:
+      ssh:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command: ["true"]
+    volumes:
+      - ssh-test-fixture:/fixture:ro
+
+volumes:
+  ssh-test-fixture:

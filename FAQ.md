@@ -9,25 +9,32 @@ checksum is recorded; add a forward-only migration instead.
 ## How is the administrator created?
 
 After migration, run `docker compose run --rm api ops-composer admin bootstrap --username admin`.
-The password is accepted only through the interactive prompt. M1 permits one administrator and has
-no registration endpoint.
+The password is accepted only through the interactive prompt. This account becomes the first
+`OWNER` and must enroll TOTP at its next password login. Owners create other accounts in the Users
+page; a 24-hour activation code is shown once and no email service is required.
 
 ## Why does production configuration fail validation?
 
 Production requires a non-default PostgreSQL URL, HTTPS allowed origins, Secure cookies, a unique
-rate-limit secret of at least 32 bytes, a base64-encoded 32-byte master key, and explicit trusted
-proxy IPs/CIDRs. Wildcards and all-network proxy ranges are rejected.
+rate-limit secret of at least 32 bytes, exactly one valid master-key configuration, and explicit
+trusted proxy IPs/CIDRs. Wildcards and all-network proxy ranges are rejected. A keyring file must be
+read-only, mode `0400`/`0600`, and readable by container UID `10001`.
 
 ## What if the master key no longer matches?
 
-Restore the original `OPS_COMPOSER_MASTER_KEY`. PostgreSQL stores only AEAD ciphertext and a key
-check envelope, so a lost key cannot be recovered. Startup fails closed to protect credentials.
+Restore every keyring version that System reports as still referenced. PostgreSQL stores only AEAD
+ciphertext and key-check envelopes, so a lost key cannot be recovered. Startup fails closed. To
+rotate, add a new version, make it primary, restart the coordinated release, and let an elevated
+OWNER start the resumable database rotation job. Remove an old deployment key only after its usage
+is zero.
 
 ## Why was a Playbook or Run rejected?
 
 Check `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` first. New Runs and retries reject a reference whose
-source is disabled. Database Playbooks must be enabled and pass YAML plus Ansible syntax checks;
-each Run pins an immutable revision. Mounted Playbooks must be `.yml`/`.yaml` files inside the
+source is disabled. Database Playbooks must be enabled and pass project limits, YAML, and Ansible
+syntax checks; each Run pins an immutable revision. Parameter validation and declared Check Mode
+are checked again for Run and Retry. A consumed sensitive parameter is intentionally not
+recoverable; retry requires new input. Mounted Playbooks must be `.yml`/`.yaml` files inside the
 workspace's `playbooks/` directory. Traversal and escaping symlinks are rejected, and the content
 hash must still match the value captured when the Run was created. A worker lease expiry produces
 `INTERRUPTED`; modifying operations are never retried automatically.
@@ -46,7 +53,7 @@ Refresh and reconnect resume from the highest sequence and the query API can rep
 
 ## Why can Web Shell not connect?
 
-Verify that the host is enabled, its PASSWORD credential is enabled, and its current SSH host key
+Verify that the host is enabled, its PASSWORD or SSH_PRIVATE_KEY credential is enabled, and its current SSH host key
 was scanned and manually confirmed in Hosts. `host_busy` means a Run or another Web Shell owns the
 host lock; `web_shell_capacity_reached` means the global limit is full. A wrong port/password or a
 changed host key makes OpenSSH fail closed; OpsComposer never accepts a new fingerprint silently.
@@ -55,6 +62,14 @@ If the page opens but the WebSocket immediately closes, ensure the reverse proxy
 requests, permits a connection longer than `OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS`, and the
 browser Origin is in `APP_ALLOWED_ORIGINS`. Refresh and window close intentionally destroy the PTY;
 Reconnect always creates a new session.
+
+## Why did an action return permission_denied or reauthentication_required?
+
+The server checks the fixed role matrix in both its transport and Service layers. Operators cannot
+manage assets or open Shell/Web Shell, and auditors are read-only. Credential changes, user
+governance, and key rotation additionally require a password plus current TOTP or recovery code;
+that elevation expires after ten minutes. Reauthenticate and retry instead of relying on a hidden
+or cached frontend button.
 
 ## Why are integration tests skipped?
 

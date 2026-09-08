@@ -162,7 +162,7 @@ def test_migration_and_configuration_cli_commands_cover_operator_outputs(
                 "database": "postgresql",
                 "database_configured": True,
                 "authentication": {
-                    "mode": "single-administrator",
+                    "mode": "multi-administrator-rbac",
                     "allowed_origins": ["http://localhost:5173"],
                     "cookies_secure": False,
                     "trusted_proxies": ["127.0.0.1"],
@@ -195,7 +195,7 @@ def test_migration_and_configuration_cli_commands_cover_operator_outputs(
     assert config_result.exit_code == 0
     assert '"environment": "development"' in config_result.stdout
     assert '"database": "postgresql"' in config_result.stdout
-    assert '"mode": "single-administrator"' in config_result.stdout
+    assert '"mode": "multi-administrator-rbac"' in config_result.stdout
     assert '"allowed_origins"' in config_result.stdout
     assert "http://localhost:5173" in config_result.stdout
 

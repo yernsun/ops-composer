@@ -33,6 +33,7 @@ from ops_composer.services.inventory import build_inventory
 from ops_composer.settings import Settings
 from ops_composer.worker import (
     AnsibleExecutor,
+    PreparedInventory,
     _known_hosts,
     _purge_expired_audit,
     _runtime_inventory,
@@ -290,10 +291,13 @@ async def _install_execution_fakes(
         async def detail(self, _run_id: UUID) -> tuple[Run, tuple[RunTarget, ...]]:
             return run, targets
 
-    async def runtime_inventory(
-        _run: Run, _credentials: object
-    ) -> tuple[dict[str, object], tuple[str, ...]]:
-        return _run.inventory_snapshot, ("sentinel-run-secret",)
+    async def runtime_inventory(_run: Run, _credentials: object) -> PreparedInventory:
+        return PreparedInventory(
+            inventory=_run.inventory_snapshot,
+            secrets=("sentinel-run-secret",),
+            private_key_revisions={},
+            private_key_hosts={},
+        )
 
     async def known_hosts(_run: Run, _assets: object) -> str:
         return "192.0.2.10 ssh-ed25519 AAAA\n"

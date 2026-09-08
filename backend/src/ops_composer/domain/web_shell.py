@@ -4,9 +4,10 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 
 from ops_composer.domain.base import StrictDomainModel
+from ops_composer.domain.ops import CredentialType
 
 
 class WebShellState(StrEnum):
@@ -36,6 +37,7 @@ class WebShellSession(StrictDomainModel):
     auth_session_id: UUID
     credential_id: UUID
     credential_version: int = Field(ge=1)
+    credential_type: CredentialType = CredentialType.PASSWORD
     host_name: str = Field(min_length=1, max_length=128)
     host_address: str = Field(min_length=1, max_length=253)
     ssh_port: int = Field(ge=1, le=65535)
@@ -53,5 +55,16 @@ class WebShellSession(StrictDomainModel):
 
 class WebShellLaunch(StrictDomainModel):
     session: WebShellSession
-    password: SecretStr = Field(repr=False)
+    password: SecretStr | None = Field(default=None, repr=False)
+    private_key: SecretStr | None = Field(default=None, repr=False)
+    passphrase: SecretStr | None = Field(default=None, repr=False)
     known_hosts: str = Field(repr=False)
+
+    @model_validator(mode="after")
+    def require_matching_credential(self) -> WebShellLaunch:
+        if self.session.credential_type is CredentialType.PASSWORD:
+            if self.password is None or self.private_key is not None:
+                raise ValueError("password Web Shell launch requires only a password")
+        elif self.private_key is None or self.password is not None:
+            raise ValueError("private-key Web Shell launch requires only a private key")
+        return self

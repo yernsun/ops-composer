@@ -11,6 +11,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import TargetPicker, { type TargetValue } from '@/components/TargetPicker.vue'
 import AuthPanel from '@/features/auth/AuthPanel.vue'
 import AppShell from '@/layout/AppShell.vue'
+import AuditPage from '@/pages/AuditPage.vue'
 import CommandPage from '@/pages/CommandPage.vue'
 import CredentialsPage from '@/pages/CredentialsPage.vue'
 import DashboardPage from '@/pages/DashboardPage.vue'
@@ -19,14 +20,20 @@ import HostsPage from '@/pages/HostsPage.vue'
 import PlaybooksPage from '@/pages/PlaybooksPage.vue'
 import RunDetailPage from '@/pages/RunDetailPage.vue'
 import RunsPage from '@/pages/RunsPage.vue'
+import SecurityPage from '@/pages/SecurityPage.vue'
 import SystemPage from '@/pages/SystemPage.vue'
+import UsersPage from '@/pages/UsersPage.vue'
 import {
+  AUTH_PERMISSIONS_CHANGED_EVENT,
+  AUTH_UNAUTHORIZED_EVENT,
   ApiRequestError,
   api,
   type CredentialDto,
   type DatabasePlaybookDto,
   type PlaybookDto,
   type RunDto,
+  type SessionDto,
+  type UserDto,
 } from '@/shared/api/client'
 
 const state = vi.hoisted(() => ({
@@ -99,6 +106,7 @@ vi.mock('vue-router', async () => {
   return {
     RouterLink,
     RouterView,
+    onBeforeRouteLeave: vi.fn(),
     useRoute: () => ({ get path() { return state.routePath } }),
     useRouter: () => ({ push: state.pushes, replace: state.replaces, resolve: state.resolves }),
   }
@@ -129,7 +137,17 @@ const session = {
   userId: '00000000-0000-4000-8000-000000000001',
   username: 'admin',
   expiresAt: timestamp,
-}
+  role: 'OWNER',
+  permissions: [
+    'asset:read', 'asset:write', 'credential:write', 'playbook:write',
+    'run:standard', 'run:shell', 'run:cancel', 'web-shell:open',
+    'audit:read', 'user:read', 'user:manage', 'key:rotate',
+  ],
+  mfaEnabled: true,
+  mfaEnrollmentRequired: false,
+  mfaVerifiedAt: timestamp,
+  elevatedUntil: '2026-09-04T00:10:00Z',
+} satisfies SessionDto
 const host = {
   hostId,
   name: 'worker-01',
@@ -151,11 +169,23 @@ const credential = {
   username: 'root',
   publicConfig: { becomeEnabled: true },
   currentVersion: 2,
+  lockVersion: 1,
   enabled: true,
   description: 'credential',
   createdAt: timestamp,
   updatedAt: timestamp,
 } satisfies CredentialDto
+const adminUser = {
+  userId: session.userId,
+  username: session.username,
+  role: session.role,
+  status: 'ACTIVE',
+  mfaEnrollmentRequired: false,
+  activatedAt: timestamp,
+  version: 1,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+} satisfies UserDto
 const group = {
   groupId: '00000000-0000-4000-8000-000000000040',
   name: 'workers',
@@ -189,6 +219,7 @@ const run = {
   requestedBy: session.userId,
   idempotencyKey: 'component-test-run',
   requestFingerprint: 'a'.repeat(64),
+  requestFingerprintScheme: 'LEGACY_SHA256',
   createdAt: timestamp,
   updatedAt: timestamp,
 } satisfies RunDto
@@ -235,6 +266,11 @@ const databasePlaybook = {
   modifiedAt: timestamp,
   sha256: 'c'.repeat(64),
   content: '---\n- name: Managed site\n  hosts: all\n  tasks: []\n',
+  entrypoint: 'playbook.yml',
+  files: [],
+  parameterSchema: { type: 'object', properties: {}, additionalProperties: false },
+  revisionFormat: 'LEGACY_SINGLE_YAML',
+  supportsCheckMode: false,
   validatorVersion: 'ansible-core test',
   validatedAt: timestamp,
 } satisfies DatabasePlaybookDto
@@ -349,6 +385,9 @@ beforeEach(() => {
         size: 2048,
         modifiedAt: timestamp,
         sha256: 'b'.repeat(64),
+        entrypoint: 'playbooks/site.yml',
+        revisionFormat: 'LEGACY_SINGLE_YAML',
+        supportsCheckMode: false,
       },
     ],
     'playbook-config': {
@@ -381,6 +420,7 @@ beforeEach(() => {
       playbookWorkspace: { ok: true, readOnlyExpected: true, path: '/workspace' },
       middlewareDependencies: [],
     },
+    users: [adminUser],
   }
   vi.stubGlobal('EventSource', FakeEventSource)
   vi.stubGlobal('URL', BrowserTestURL)
@@ -468,7 +508,7 @@ describe('PrimeVue application views', () => {
     wrapper.unmount()
   })
 
-  it('renders every M1 page with populated query states', async () => {
+  it('renders every P2 page with populated query states', async () => {
     const pages: Array<{ component: Component; props?: Record<string, unknown> }> = [
       { component: DashboardPage },
       { component: HostsPage },
@@ -478,6 +518,9 @@ describe('PrimeVue application views', () => {
       { component: PlaybooksPage },
       { component: RunsPage },
       { component: RunDetailPage, props: { id: runId } },
+      { component: AuditPage },
+      { component: UsersPage },
+      { component: SecurityPage },
       { component: SystemPage },
     ]
 
@@ -493,6 +536,34 @@ describe('PrimeVue application views', () => {
       }
       for (const control of wrapper.findAllComponents(SlotStub)) {
         await control.trigger('click').catch(() => undefined)
+      }
+      if (page.component === SystemPage) {
+        const systemView = wrapper.vm as unknown as {
+          requestRotation: () => void
+          continueRotation: () => void
+        }
+        systemView.requestRotation()
+        systemView.continueRotation()
+        systemView.continueRotation()
+      }
+      if (page.component === UsersPage) {
+        const usersView = wrapper.vm as unknown as {
+          openCreate: () => void
+          openEdit: (user: UserDto) => void
+          closeActivation: () => void
+          formatDate: (value: string | null) => string
+          sensitive: (action: () => void) => void
+          retryAfterElevation: () => void
+        }
+        const action = vi.fn()
+        usersView.openCreate()
+        usersView.openEdit(adminUser)
+        usersView.closeActivation()
+        expect(usersView.formatDate(null)).toBe('—')
+        expect(usersView.formatDate(timestamp)).not.toBe('—')
+        usersView.sensitive(action)
+        usersView.retryAfterElevation()
+        expect(action).toHaveBeenCalledOnce()
       }
       await flushPromises()
       wrapper.unmount()
@@ -532,10 +603,21 @@ describe('PrimeVue application views', () => {
       props: { session },
     })
     expect(shell.text()).toContain('OpsComposer')
+    const shellView = shell.vm as unknown as {
+      setLocale: (value: 'zh-CN' | 'en-US') => void
+      setTheme: (value: 'light' | 'dark' | 'system') => void
+    }
+    shellView.setLocale('zh-CN')
+    shellView.setTheme('dark')
+    expect(document.documentElement.lang).toBe('zh-CN')
+    expect(localStorage.getItem('app.theme')).toBe('dark')
     shell.unmount()
 
     const application = shallowMount(App, mountOptions())
     await nextTick()
+    window.dispatchEvent(new CustomEvent(AUTH_UNAUTHORIZED_EVENT))
+    window.dispatchEvent(new CustomEvent(AUTH_PERMISSIONS_CHANGED_EVENT))
+    await flushPromises()
     expect(application.exists()).toBe(true)
     application.unmount()
   })
@@ -667,9 +749,15 @@ describe('PrimeVue application views', () => {
     await confirmation?.accept?.()
     await flushPromises()
 
-    expect(api.validatePlaybook).toHaveBeenCalledWith({ content: databasePlaybook.content })
+    expect(api.validatePlaybook).toHaveBeenCalledWith({
+      files: [{ path: 'playbook.yml', content: databasePlaybook.content }],
+      entrypoint: 'playbook.yml',
+      parameterSchema: { type: 'object', properties: {}, additionalProperties: false },
+      supportsCheckMode: false,
+    })
     expect(api.validatePlaybook).toHaveBeenCalledWith({
       playbook: { source: 'DATABASE', playbookId: databasePlaybook.playbookId },
+      supportsCheckMode: false,
     })
     expect(api.updateDatabasePlaybook).toHaveBeenCalled()
     expect(api.createPlaybookRun).toHaveBeenCalledWith(

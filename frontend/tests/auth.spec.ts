@@ -11,6 +11,8 @@ import {
   resolveApiBaseUrl,
   resolveWebShellSocketUrl,
   runEventSource,
+  webShellSocket,
+  type SessionDto,
 } from '@/shared/api/client'
 import {
   applySessionTransition,
@@ -71,6 +73,16 @@ describe('session API client', () => {
     expect(() =>
       resolveWebShellSocketUrl('wss://other.example.com/stream', 'https://ops.example.com'),
     ).toThrow('same HTTP origin')
+
+    class FakeWebSocket {
+      constructor(readonly url: string) {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const socket = webShellSocket(
+      '/api/v1/web-shell-sessions/session-1/stream',
+    ) as unknown as FakeWebSocket
+    expect(socket.url).toContain('/api/v1/web-shell-sessions/session-1/stream')
+    vi.unstubAllGlobals()
   })
 
   it('prefers the production CSRF cookie and sends it on unsafe requests', async () => {
@@ -100,21 +112,38 @@ describe('session API client', () => {
     vi.restoreAllMocks()
   })
 
-  it('maps every M1 client operation to the same-origin HTTP contract', async () => {
+  it('maps core client operations to the same-origin HTTP contract', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
         requests.push({ url: String(input), ...(init ? { init } : {}) })
-        return new Response('{}', {
+        const response = new Response('{}', {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })
+        vi.spyOn(response, 'blob').mockResolvedValue({
+          text: async () => '{}',
+        } as unknown as Blob)
+        return response
       }),
     )
 
     await Promise.all([
       api.login({ username: 'admin', password: 'test-password' }),
+      api.activate({} as Parameters<typeof api.activate>[0]),
+      api.verifyMfa('123456'),
+      api.confirmMfaEnrollment('123456'),
+      api.beginMfaEnrollment(),
+      api.reauthenticate({} as Parameters<typeof api.reauthenticate>[0]),
+      api.securityStatus(),
+      api.regenerateRecoveryCodes(),
+      api.changePassword({} as Parameters<typeof api.changePassword>[0]),
+      api.users(),
+      api.createUser({} as Parameters<typeof api.createUser>[0]),
+      api.updateUser('user-1', {} as Parameters<typeof api.updateUser>[1]),
+      api.reissueUserActivation('user-1'),
+      api.resetUserMfa('user-1'),
       api.session(),
       api.logout(),
       api.overview(),
@@ -141,6 +170,11 @@ describe('session API client', () => {
         'credential-1',
         {} as Parameters<typeof api.rotateCredential>[1],
       ),
+      api.updateCredential(
+        'credential-1',
+        {} as Parameters<typeof api.updateCredential>[1],
+      ),
+      api.credentialRevisions('credential-1'),
       api.deleteCredential('credential-1'),
       api.runs(25),
       api.run('run-1'),
@@ -149,15 +183,44 @@ describe('session API client', () => {
       api.createPlaybookRun({} as Parameters<typeof api.createPlaybookRun>[0]),
       api.cancelRun('run-1'),
       api.retryRun('run-1'),
+      api.retryRun('run-1', { apiToken: 'replacement' }),
       api.playbooks(),
+      api.playbookConfig(),
+      api.databasePlaybook('playbook-1'),
+      api.createDatabasePlaybook(
+        {} as Parameters<typeof api.createDatabasePlaybook>[0],
+      ),
+      api.updateDatabasePlaybook(
+        'playbook-1',
+        {} as Parameters<typeof api.updateDatabasePlaybook>[1],
+      ),
+      api.deleteDatabasePlaybook('playbook-1', 2),
       api.validatePlaybook({
         playbook: { source: 'MOUNT', path: 'playbooks/site.yml' },
+        supportsCheckMode: false,
+      }),
+      api.playbookRevisions('playbook-1'),
+      api.playbookRevision('playbook-1', 2),
+      api.diffPlaybookRevisions('playbook-1', 2, 1),
+      api.restorePlaybookRevision('playbook-1', 1, 2),
+      api.importPlaybookZip(
+        new File(['project'], 'project.zip', { type: 'application/zip' }),
+        'site.yml',
+      ),
+      api.exportPlaybookZip('playbook-1', 2),
+      api.previewPlaybookRun({} as Parameters<typeof api.previewPlaybookRun>[0]),
+      api.auditEvents({ outcome: 'FAILED', empty: null }),
+      api.exportAuditEvents({
+        since: '2026-09-04T00:00:00Z',
+        until: '2026-09-04T01:00:00Z',
       }),
       api.systemInfo(),
       api.systemDoctor(),
+      api.keyringStatus(),
+      api.requestKeyRotation(),
     ])
 
-    expect(requests).toHaveLength(33)
+    expect(requests).toHaveLength(65)
     expect(requests.every(({ url }) => url.startsWith(window.location.origin))).toBe(true)
     expect(requests.find(({ url }) => url.includes('/runs?limit=25'))).toBeDefined()
     expect(newIdempotencyKey().length).toBeGreaterThanOrEqual(8)
@@ -203,7 +266,17 @@ describe('session API client', () => {
       userId: '00000000-0000-4000-8000-000000000001',
       username: 'admin',
       expiresAt: '2026-01-02T00:00:00Z',
-    }
+      role: 'OWNER',
+      permissions: [
+        'asset:read', 'asset:write', 'credential:write', 'playbook:write',
+        'run:standard', 'run:shell', 'run:cancel', 'web-shell:open',
+        'audit:read', 'user:read', 'user:manage', 'key:rotate',
+      ],
+      mfaEnabled: true,
+      mfaEnrollmentRequired: false,
+      mfaVerifiedAt: '2026-01-01T00:00:00Z',
+      elevatedUntil: '2026-01-01T00:10:00Z',
+    } satisfies SessionDto
 
     await applySessionTransition(queryClient, session)
 

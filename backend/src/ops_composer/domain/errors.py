@@ -68,6 +68,16 @@ class PlaybookVersionConflictError(ConflictError):
     public_message = "playbook was modified by another request"
 
 
+class PlaybookProjectInvalidError(PlaybookInvalidError):
+    code = "playbook_project_invalid"
+    public_message = "Playbook project validation failed"
+
+
+class SecretParametersRequiredError(ValidationError):
+    code = "secret_parameters_required"
+    public_message = "sensitive Playbook parameters must be supplied again"
+
+
 class HostKeyChangedError(ConflictError):
     code = "host_key_changed"
     public_message = "the SSH host key differs from the trusted key"
@@ -103,6 +113,17 @@ class WebShellUnavailableError(OpsError):
     code = "web_shell_unavailable"
     status_code = 503
     public_message = "Web Shell is unavailable"
+
+
+class KeyVersionMissingError(OpsError):
+    code = "key_version_missing"
+    status_code = 503
+    public_message = "an encryption key required by stored data is unavailable"
+
+
+class KeyRotationInProgressError(ConflictError):
+    code = "key_rotation_in_progress"
+    public_message = "a master-key rotation is already active"
 
 
 class ClaimCollisionError(RuntimeError):

@@ -61,9 +61,7 @@ async def create_web_shell_session(
         address=session.host_address,
         ssh_port=session.ssh_port,
         username=session.username,
-        stream_path=(
-            f"/api/v1/web-shell-sessions/{session.web_shell_session_id}/stream"
-        ),
+        stream_path=(f"/api/v1/web-shell-sessions/{session.web_shell_session_id}/stream"),
         ticket_expires_at=session.ticket_expires_at,
         idle_timeout_seconds=settings.web_shell_idle_timeout_seconds,
         max_duration_seconds=settings.web_shell_max_duration_seconds,

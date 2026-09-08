@@ -2,12 +2,12 @@
 
 简体中文 | [English](README.md)
 
-OpsComposer 是一个单管理员、轻量级的 Ansible 运维平台。M1 只依赖 PostgreSQL 16：
+OpsComposer 是一个支持多管理员治理的轻量级 Ansible 运维平台。运行时只依赖 PostgreSQL 16：
 业务数据、持久化任务队列、Worker Lease、Host Lock、事件回放和认证限流均存放在数据库中。
 项目不依赖 Redis、Celery、Kafka、对象存储、SQLAlchemy 或独立 Nginx 服务。
 
 前端使用 Vue 3、TypeScript、PrimeVue 4、Vue Router 和 vue-i18n；后端使用 FastAPI、
-Psycopg 3 async pool、Ansible Runner、Argon2id 和 AES-256-GCM。
+Psycopg 3 async pool、Ansible Runner、Argon2id、RFC 6238 TOTP 和 AES-256-GCM。
 
 ## Project Forge 基线
 
@@ -20,10 +20,11 @@ Psycopg 3 async pool、Ansible Runner、Argon2id 和 AES-256-GCM。
 
 完整产品与安全设计见 [docs/ops-composer-design.md](docs/ops-composer-design.md)。
 
-## M1 能力
+## P2 能力
 
-- 单管理员登录；管理员只能通过交互式 CLI 初始化，无注册或 Workspace API。
-- Host、Group、PASSWORD Credential 与不可变 Credential Revision。
+- `OWNER | ADMIN | OPERATOR | AUDITOR` 固定角色、24 小时一次性激活码、TOTP MFA、恢复码和
+  10 分钟敏感操作再认证；禁止硬删除用户并保护最后一个 ACTIVE OWNER。
+- Host、Group、PASSWORD/SSH_PRIVATE_KEY Credential 与不可变 Credential Revision。
 - SSH Host Key 扫描、指纹确认和每次 Run 的临时 `known_hosts`。
 - 主机操作区 Web Shell：新窗口完整 PTY、xterm.js、严格 Host Key 校验，且不保存终端内容。
 - Ping、Command、需二次确认的 Shell，以及数据库或只读挂载来源的 Playbook。
@@ -32,7 +33,9 @@ Psycopg 3 async pool、Ansible Runner、Argon2id 和 AES-256-GCM。
 - PostgreSQL `FOR UPDATE SKIP LOCKED` 队列、Lease 失联恢复和按 Host 串行锁。
 - 持久化 RunEvent、可按 sequence 回放的 SSE、取消、超时、输出截断和秘密脱敏。
 - 单行 JSON 实时日志与 PostgreSQL 不可变业务审计；默认保留 180 天并由 Worker 每日清理。
-- PrimeVue 响应式管理界面：概览、主机、分组、凭据、命令、Playbook、执行历史、详情和系统页。
+- 数据库多文件 Playbook、不可变修订历史、Diff/恢复、受限 ZIP、参数 Schema、敏感参数和
+  Check Mode 声明。
+- 在线 Master Keyring 轮换与版本用量；PrimeVue 增加用户治理、个人安全、审计和轮换页面。
 
 ## 生产 Compose
 
@@ -42,16 +45,25 @@ Vue 静态资源已构建到镜像并由 FastAPI 提供。
 ```bash
 cp .env.example .env
 openssl rand -hex 32       # 填入 APP_AUTH_RATE_LIMIT_SECRET
-openssl rand -base64 32    # 填入 OPS_COMPOSER_MASTER_KEY
+openssl rand -base64 32    # 生成一个解码后 32 字节的 Keyring Key
 # 设置数据库密码、URL、外部 HTTPS Origin 和受信代理后：
 docker compose config
 docker compose up -d --build
 docker compose run --rm api ops-composer admin bootstrap --username admin
 ```
 
-`OPS_COMPOSER_MASTER_KEY` 必须稳定备份；更换或丢失该密钥会使已有凭据不可解密，应用将
-fail closed。`DATABASE_URL` 中密码的保留字符必须进行 URL 编码。默认只把 API 暴露到
+新部署推荐将版本化 JSON Keyring 写入 `volumes/keyring/keyring.json`，文件由容器 UID
+`10001` 可读且权限为 `0400` 或 `0600`，并设置
+`OPS_COMPOSER_MASTER_KEYRING_FILE=/run/secrets/ops-composer-keyring/keyring.json`。格式为
+`{"primaryVersion": 1, "keys": {"1": "<base64-32-byte-key>"}}`。兼容周期内仍可单独使用
+`OPS_COMPOSER_MASTER_KEY` 与版本，但两种方式不可同时配置。所有仍被引用的 Key 版本都必须
+稳定备份；缺失时 API/Worker fail closed。`DATABASE_URL` 中密码的保留字符必须进行 URL 编码。默认只把 API 暴露到
 `127.0.0.1:8080`，应由部署方提供 TLS 终止。
+
+Bootstrap 用户为首个 OWNER。已有部署升级后会撤销旧 Session，并要求下一次密码登录完成
+TOTP 注册。OWNER 创建用户后只展示一次 24 小时激活码；TOTP Seed 和 10 个恢复码也只展示
+一次。用户治理、Credential 写入和 Key 轮换要求最近 10 分钟内完成密码加 MFA 再认证。唯一
+OWNER 丢失全部因子时，可在服务端使用带确认短语并完整审计的 `ops-composer admin mfa-reset`。
 
 ## 业务日志与审计
 
@@ -61,7 +73,8 @@ API、Worker、CLI、Migration 和 Uvicorn 均向 stdout 输出单行 JSON；Com
 Inventory 或 Ansible 原始载荷。`APP_LOG_LEVEL` 支持 `DEBUG/INFO/WARNING/ERROR`。
 
 关键业务事件同时写入 PostgreSQL `audit_events`，默认保留 180 天，可通过
-`OPS_COMPOSER_AUDIT_RETENTION_DAYS=1..3650` 调整。审计仅由本机受控 CLI 访问：
+`OPS_COMPOSER_AUDIT_RETENTION_DAYS=1..3650` 调整。OWNER、ADMIN 和 AUDITOR 可在 Web 查询和
+导出；本机受控 CLI 继续提供离线查询与清理：
 
 ```bash
 docker compose run --rm api ops-composer audit list --jsonl
@@ -79,9 +92,15 @@ docker compose run --rm api ops-composer audit purge --execute   # 按保留期�
 ## Playbook 来源
 
 `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE` 支持 `database`、`mount` 和默认的 `both`。数据库
-Playbook 可在 Web 创建、校验、编辑、启停和软删除；每次成功保存产生不可变 revision，Run
-始终固定创建时的 revision，因此排队或历史 Run 不受后续编辑、停用和删除影响。数据库
-Playbook 是隔离的单 YAML 项目，不能隐式读取挂载目录中的 roles、templates、files 或 vars。
+Playbook 可在 Web 创建、校验、编辑、启停和软删除；支持多文件项目、不可变 revision 历史、
+受限 Diff、恢复为新 revision，以及确定性 ZIP 导入导出。每个项目最多 256 个 UTF-8 文本文件、
+总计 10 MiB，具有唯一 YAML entrypoint；允许安全的 roles/templates/files/vars，拒绝自定义
+插件、项目内 collection、inventory、`ansible.cfg`、软链接、可执行文件、路径穿越和网络下载。
+Run 始终固定创建时的 revision，项目也不会隐式读取挂载目录。
+
+受控 JSON Schema 可生成参数表单。敏感 string 参数无默认值，独立加密，并在 PREPARING 阶段
+原子消费；不会进入操作快照、响应、日志、审计或 RunEvent。消费后失败或恢复为 INTERRUPTED，
+Retry 必须重新填写。只有 revision 明确声明支持时才能使用 Check Mode。
 
 挂载来源始终只读，仅发现 `playbooks/**/*.yml(yaml)`，拒绝绝对路径、`..` 和越界软链接。
 `both` 模式缺少挂载目录时，System Doctor 标记为降级，但数据库来源仍可使用。同名 Playbook
@@ -103,8 +122,9 @@ OPS_COMPOSER_WEB_SHELL_IDLE_TIMEOUT_SECONDS=1800
 OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS=28800
 ```
 
-连接要求主机已启用、PASSWORD Credential 可用并已人工确认 Host Key。密码仅通过匿名 pipe 交给
-`sshpass -d`，不会进入参数、环境变量或文件。生产反向代理必须转发 WebSocket `Upgrade`，并将
+连接要求主机已启用、PASSWORD 或 SSH_PRIVATE_KEY Credential 可用并已人工确认 Host Key。
+密码和私钥口令仅通过匿名 pipe 交给受控 helper；私钥会话使用隔离 `ssh-agent`，退出时清理
+进程、Socket、`0600` 文件及 `0700` 目录。生产反向代理必须转发 WebSocket `Upgrade`，并将
 连接超时设置为大于 Web Shell 最长会话时间；浏览器 Origin 必须出现在 `APP_ALLOWED_ORIGINS`。
 
 ## 开发环境

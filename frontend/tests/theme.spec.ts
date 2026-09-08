@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { darkThemeClass } from '@/shared/theme'
+import { useLocaleStore } from '@/shared/stores/locale'
 import { useThemeStore } from '@/shared/stores/theme'
 
 function mockSystemTheme(initialMatches: boolean) {
@@ -43,6 +44,18 @@ beforeEach(() => {
 })
 
 describe('theme preference', () => {
+  it('updates the application and PrimeVue locales together', () => {
+    const store = useLocaleStore()
+    const primeVue = { config: { locale: {} } } as Parameters<typeof store.setLocale>[1]
+
+    store.setLocale('en-US', primeVue)
+
+    expect(store.locale).toBe('en-US')
+    expect(document.documentElement.lang).toBe('en-US')
+    expect(localStorage.getItem('app.locale')).toBe('en-US')
+    expect(primeVue.config.locale).toMatchObject({ accept: 'Yes', reject: 'No' })
+  })
+
   it('persists explicit choices and follows operating-system changes in system mode', () => {
     const systemTheme = mockSystemTheme(false)
     const store = useThemeStore()

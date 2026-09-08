@@ -52,3 +52,55 @@ class AuthRateLimitedError(AuthError):
     code = "auth_rate_limited"
     status_code = 429
     public_message = "too many authentication attempts"
+
+
+class PermissionDeniedError(AuthError):
+    code = "permission_denied"
+    status_code = 403
+    public_message = "permission denied"
+
+
+class ReauthenticationRequiredError(AuthError):
+    code = "reauthentication_required"
+    status_code = 403
+    public_message = "recent reauthentication is required"
+
+
+class MfaRequiredError(AuthError):
+    code = "mfa_required"
+    status_code = 401
+    public_message = "multi-factor authentication is required"
+
+
+class InvalidMfaCodeError(AuthError):
+    code = "invalid_mfa_code"
+    public_message = "multi-factor authentication failed"
+
+
+class InvalidChallengeError(AuthError):
+    code = "invalid_auth_challenge"
+    public_message = "authentication challenge is invalid or expired"
+
+
+class ActivationExpiredError(AuthError):
+    code = "activation_expired"
+    status_code = 410
+    public_message = "activation code is invalid or expired"
+
+
+class UserConflictError(AuthError):
+    code = "user_conflict"
+    status_code = 409
+    public_message = "user conflicts with an existing account"
+
+
+class UserVersionConflictError(AuthError):
+    code = "version_conflict"
+    status_code = 409
+    public_message = "user was modified by another request"
+
+
+class LastOwnerRequiredError(AuthError):
+    code = "last_owner_required"
+    status_code = 409
+    public_message = "at least one active owner is required"

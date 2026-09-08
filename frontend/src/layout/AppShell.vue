@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import ConfirmDialog from 'primevue/confirmdialog'
 import Drawer from 'primevue/drawer'
 import Select from 'primevue/select'
+import Tag from 'primevue/tag'
 import Toast from 'primevue/toast'
 import { usePrimeVue } from 'primevue/config'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
@@ -12,13 +13,14 @@ import { useI18n } from 'vue-i18n'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
 import { applySessionTransition } from '@/features/auth/session'
-import { api, type SessionDto } from '@/shared/api/client'
+import { hasPermission } from '@/features/auth/authorization'
+import { api, type PermissionDto, type SessionDto } from '@/shared/api/client'
 import { supportedLocales, type AppLocale } from '@/shared/i18n'
 import { useLocaleStore } from '@/shared/stores/locale'
 import { useThemeStore } from '@/shared/stores/theme'
 import { themePreferences, type ThemePreference } from '@/shared/theme'
 
-defineProps<{ session: SessionDto }>()
+const props = defineProps<{ session: SessionDto }>()
 
 const { t } = useI18n()
 const queryClient = useQueryClient()
@@ -28,21 +30,32 @@ const localeStore = useLocaleStore()
 const themeStore = useThemeStore()
 const mobileOpen = ref(false)
 
-const navItems = [
+const allNavItems: ReadonlyArray<{
+  to: string
+  label: string
+  icon: string
+  permission?: PermissionDto
+}> = [
   { to: '/', label: 'nav.overview', icon: 'pi pi-home' },
   { to: '/hosts', label: 'nav.hosts', icon: 'pi pi-server' },
   { to: '/groups', label: 'nav.groups', icon: 'pi pi-sitemap' },
   { to: '/credentials', label: 'nav.credentials', icon: 'pi pi-key' },
-  { to: '/commands', label: 'nav.commands', icon: 'pi pi-terminal' },
+  { to: '/commands', label: 'nav.commands', icon: 'pi pi-terminal', permission: 'run:standard' },
   { to: '/playbooks', label: 'nav.playbooks', icon: 'pi pi-book' },
   { to: '/runs', label: 'nav.runs', icon: 'pi pi-history' },
+  { to: '/audit', label: 'nav.audit', icon: 'pi pi-list-check', permission: 'audit:read' },
+  { to: '/users', label: 'nav.users', icon: 'pi pi-users', permission: 'user:manage' },
+  { to: '/security', label: 'nav.security', icon: 'pi pi-shield' },
   { to: '/system', label: 'nav.system', icon: 'pi pi-cog' },
-] as const
+]
+const navItems = computed(() =>
+  allNavItems.filter((item) => !item.permission || hasPermission(props.session, item.permission)),
+)
 
 const localeOptions = supportedLocales.map((value) => ({ value, label: value }))
 const themeOptions = themePreferences.map((value) => ({ value, label: value }))
 const currentTitle = computed(
-  () => navItems.find((item) => item.to === route.path)?.label ?? 'nav.runs',
+  () => allNavItems.find((item) => item.to === route.path)?.label ?? 'nav.runs',
 )
 
 const logoutMutation = useMutation({
@@ -145,6 +158,7 @@ onBeforeUnmount(themeStore.stop)
           </Select>
           <Avatar icon="pi pi-user" shape="circle" />
           <span class="user-name">{{ session.username }}</span>
+          <Tag :value="t(`roles.${session.role}`)" severity="secondary" />
           <Button
             icon="pi pi-sign-out"
             severity="secondary"

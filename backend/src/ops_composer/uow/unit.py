@@ -13,6 +13,7 @@ from ops_composer.db.types import DbPool
 from ops_composer.repositories.assets import PostgresAssetRepository
 from ops_composer.repositories.audit import PostgresAuditRepository
 from ops_composer.repositories.base import RepositoryConnection
+from ops_composer.repositories.encryption import PostgresEncryptionRepository
 from ops_composer.repositories.health import PostgresHealthRepository
 from ops_composer.repositories.playbooks import PostgresPlaybookRepository
 from ops_composer.repositories.runs import PostgresRunRepository
@@ -103,6 +104,12 @@ class UnitOfWork:
         """Return append-only operational audit persistence."""
 
         return PostgresAuditRepository(self._require_connection())
+
+    @cached_property
+    def encryption(self) -> PostgresEncryptionRepository:
+        """Return key registry, encrypted system state, and rotation persistence."""
+
+        return PostgresEncryptionRepository(self._require_connection())
 
     @cached_property
     def web_shell(self) -> PostgresWebShellRepository:

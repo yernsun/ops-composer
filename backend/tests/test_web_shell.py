@@ -49,7 +49,7 @@ from ops_composer.repositories.base import RepositoryConnection
 from ops_composer.repositories.web_shell import PostgresWebShellRepository
 from ops_composer.services.crypto import CredentialCipher
 from ops_composer.services.web_shell import WebShellService
-from ops_composer.settings import Settings
+from ops_composer.settings import Settings, get_settings
 from ops_composer.ssh_terminal import SshTerminal, SshTerminalStartError
 from ops_composer.uow.factory import UnitOfWorkFactory
 from ops_composer.web_shell_manager import ActiveWebShell, WebShellManager
@@ -934,6 +934,7 @@ async def test_websocket_rejects_origin_and_missing_cookie_before_upgrade() -> N
     assert websocket.closed == (4403, "")
 
     websocket = _FakeWebSocket()
+    websocket.headers["origin"] = sorted(get_settings().allowed_origins)[0]
     websocket.cookies.clear()
     await stream_web_shell(cast(Any, websocket), uuid4())
     assert websocket.closed == (4401, "")

@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from ops_composer.auth.models import SessionPrincipal
+from pydantic import SecretStr
+
+from ops_composer.auth.models import Permission, SessionPrincipal
+from ops_composer.auth.service import require_permission
 from ops_composer.domain.audit import (
     AuditAction,
     AuditEventDraft,
@@ -21,6 +24,7 @@ from ops_composer.domain.errors import (
     WebShellSessionExpiredError,
     WebShellUnavailableError,
 )
+from ops_composer.domain.ops import CredentialType
 from ops_composer.domain.web_shell import (
     WebShellCloseReason,
     WebShellLaunch,
@@ -53,6 +57,7 @@ class WebShellService:
         principal: SessionPrincipal,
         owner_id: str,
     ) -> WebShellSession:
+        require_permission(principal, Permission.WEB_SHELL)
         now = utc_now()
         ticket_expires_at = now + timedelta(seconds=WEB_SHELL_TICKET_SECONDS)
         session: WebShellSession | None = None
@@ -95,6 +100,7 @@ class WebShellService:
                 auth_session_id=principal.session_id,
                 credential_id=target.credential_id,
                 credential_version=target.credential_version,
+                credential_type=target.credential_type,
                 host_name=target.name,
                 host_address=target.address,
                 ssh_port=target.ssh_port,
@@ -146,6 +152,7 @@ class WebShellService:
         principal: SessionPrincipal,
         owner_id: str,
     ) -> WebShellLaunch:
+        require_permission(principal, Permission.WEB_SHELL)
         now = utc_now()
         expires_at = now + timedelta(seconds=WEB_SHELL_LEASE_SECONDS)
         event = None
@@ -174,16 +181,37 @@ class WebShellService:
             )
             if revision is None:
                 raise WebShellUnavailableError("credential revision is unavailable")
-            if revision.encryption_key_version != self._cipher.key_version:
-                raise WebShellUnavailableError("credential key version is unavailable")
-            secret = self._cipher.decrypt(
-                revision.credential_id,
-                revision.version,
-                revision.encrypted_secret,
-            )
-            password = secret.get("password")
-            if not password or "\x00" in password or "\n" in password or "\r" in password:
-                raise WebShellUnavailableError("credential password is unsupported for Web Shell")
+            try:
+                secret = self._cipher.decrypt(
+                    revision.credential_id,
+                    revision.version,
+                    revision.encrypted_secret,
+                    revision.encryption_key_version,
+                )
+            except ValueError as error:
+                raise WebShellUnavailableError("credential key version is unavailable") from error
+            password: SecretStr | None = None
+            private_key: SecretStr | None = None
+            passphrase: SecretStr | None = None
+            if active.credential_type is CredentialType.PASSWORD:
+                raw_password = secret.get("password")
+                if (
+                    not raw_password
+                    or "\x00" in raw_password
+                    or "\n" in raw_password
+                    or "\r" in raw_password
+                ):
+                    raise WebShellUnavailableError(
+                        "credential password is unsupported for Web Shell"
+                    )
+                password = SecretStr(raw_password)
+            else:
+                raw_private_key = secret.get("privateKey")
+                if not raw_private_key or "\x00" in raw_private_key:
+                    raise WebShellUnavailableError("credential private key is unavailable")
+                private_key = SecretStr(raw_private_key)
+                raw_passphrase = secret.get("passphrase")
+                passphrase = SecretStr(raw_passphrase) if raw_passphrase is not None else None
             keys = await unit_of_work.assets.list_host_keys(active.host_id)
             if not keys:
                 raise HostKeyConfirmationRequiredError(
@@ -194,12 +222,12 @@ class WebShellService:
                 if active.ssh_port == 22
                 else f"[{active.host_address}]:{active.ssh_port}"
             )
-            known_hosts = "".join(
-                f"{marker} {key.algorithm} {key.public_key}\n" for key in keys
-            )
+            known_hosts = "".join(f"{marker} {key.algorithm} {key.public_key}\n" for key in keys)
             launch = WebShellLaunch(
                 session=active,
                 password=password,
+                private_key=private_key,
+                passphrase=passphrase,
                 known_hosts=known_hosts,
             )
             event = new_audit_event(
@@ -253,9 +281,7 @@ class WebShellService:
             return WebShellCloseReason.USER_REQUESTED
         return WebShellCloseReason.AUTH_SESSION_INVALID
 
-    async def request_close(
-        self, web_shell_session_id: UUID, principal: SessionPrincipal
-    ) -> None:
+    async def request_close(self, web_shell_session_id: UUID, principal: SessionPrincipal) -> None:
         event = None
         async with self._unit_of_work_factory() as unit_of_work:
             current = await unit_of_work.web_shell.get(web_shell_session_id, for_update=True)

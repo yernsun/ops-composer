@@ -14,18 +14,21 @@ API 和 Worker 不会自动修改 Schema。先运行 `ops-composer migrate statu
 docker compose run --rm api ops-composer admin bootstrap --username admin
 ```
 
-密码只能通过交互提示输入。系统只允许一个管理员，不存在注册接口。
+密码只能通过交互提示输入。该用户成为首个 `OWNER`，并在下一次密码登录时强制注册 TOTP。
+OWNER 可在用户治理页面创建其他账号；系统只展示一次 24 小时激活码，不依赖邮件服务。
 
 ## 为什么生产配置校验失败？
 
 生产模式要求：非默认 PostgreSQL URL、HTTPS `APP_ALLOWED_ORIGINS`、Secure Cookie、至少
-32 字节的限流 secret、base64 编码的 32 字节 Master Key，以及明确的受信代理 IP/CIDR。
+32 字节的限流 secret、且仅一种有效 Master Key 配置，以及明确的受信代理 IP/CIDR。Keyring
+文件必须只读、权限为 `0400`/`0600`，并可由容器 UID `10001` 读取。
 不要在 `FORWARDED_ALLOW_IPS` 中使用 `*` 或全网 CIDR。
 
 ## Master Key 不匹配怎么办？
 
-恢复创建 Credential 时使用的原始 `OPS_COMPOSER_MASTER_KEY`。数据库仅保存 AEAD 密文和
-密钥检查信封，无法恢复丢失的密钥；应用会 fail closed，避免用错误密钥继续运行。
+恢复 System 页面仍显示被引用的全部 Keyring 版本。数据库仅保存 AEAD 密文和密钥检查信封，
+无法恢复丢失的 Key；应用会 fail closed。轮换时先加入并切换 Primary Key，协调重启同版本
+API/Worker，再由完成再认证的 OWNER 启动可恢复轮换 Job；旧版本用量归零后才能从部署文件移除。
 
 ## 为什么 Host Key 确认失败？
 
@@ -35,8 +38,9 @@ docker compose run --rm api ops-composer admin bootstrap --username admin
 ## 为什么 Playbook 被拒绝？
 
 先检查 `OPS_COMPOSER_PLAYBOOK_SOURCE_MODE`。新 Run 和 Retry 引用了未启用来源时会被拒绝。
-数据库 Playbook 必须处于启用状态并通过 YAML 与 Ansible syntax-check，Run 会固定不可变
-revision。挂载 Playbook 只允许 Workspace 的 `playbooks/` 下 `.yml`/`.yaml` 文件，软链接或
+数据库 Playbook 必须处于启用状态并通过项目限制、YAML 与 Ansible syntax-check，Run 会固定
+不可变 revision；创建与 Retry 都会重新检查参数 Schema 和 Check Mode 声明。敏感参数一旦消费
+不可恢复，Retry 必须重新填写。挂载 Playbook 只允许 Workspace 的 `playbooks/` 下 `.yml`/`.yaml` 文件，软链接或
 `..` 不能越界；创建 Run 后内容哈希发生变化也会拒绝执行。
 
 ## 为什么 System Doctor 显示 Playbook 挂载降级？
@@ -58,7 +62,7 @@ Worker Lease 过期时，数据库恢复流程会把仍在 PREPARING/RUNNING 的
 
 ## 为什么 Web Shell 无法连接？
 
-先确认主机已启用、PASSWORD Credential 有效，并在主机管理中扫描且人工确认了当前 SSH Host
+先确认主机已启用、PASSWORD 或 SSH_PRIVATE_KEY Credential 有效，并在主机管理中扫描且人工确认了当前 SSH Host
 Key。`host_busy` 表示该主机已被 Run 或另一个 Web Shell 占用；
 `web_shell_capacity_reached` 表示全局会话已满。错误端口、密码错误或远端 Host Key 变化会使
 OpenSSH fail closed，不会自动接受新指纹。
@@ -66,6 +70,12 @@ OpenSSH fail closed，不会自动接受新指纹。
 如果页面能打开但 WebSocket 立即断开，请检查反向代理是否转发 `Upgrade`/`Connection` 头、
 代理读写超时是否大于 `OPS_COMPOSER_WEB_SHELL_MAX_DURATION_SECONDS`，以及浏览器 Origin 是否在
 `APP_ALLOWED_ORIGINS`。刷新和关窗会按设计结束当前 PTY；重新连接始终创建新会话。
+
+## 为什么操作返回 permission_denied 或 reauthentication_required？
+
+后端会在 API 和 Service 两层执行固定角色矩阵。OPERATOR 不能管理资产或使用 Shell/Web Shell，
+AUDITOR 只读。Credential 写入、用户治理和 Key 轮换还要求密码加当前 TOTP/恢复码再认证，权限
+提升 10 分钟后过期；请重新认证后重试，不应依赖前端按钮是否可见判断权限。
 
 ## 为什么真实集成测试被跳过？
 

@@ -30,9 +30,7 @@ _MAX_METADATA_BYTES: Final = 16 * 1_024
 _MAX_STACK_FRAMES: Final = 40
 
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_DATABASE_URL = re.compile(
-    r"(?i)\bpostgres(?:ql)?(?:\+[a-z0-9_.-]+)?://[^\s\"'<>]+"
-)
+_DATABASE_URL = re.compile(r"(?i)\bpostgres(?:ql)?(?:\+[a-z0-9_.-]+)?://[^\s\"'<>]+")
 _BEARER_VALUE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(password|passphrase|secret|token|authorization|csrf|master[_-]?key)"
@@ -122,9 +120,7 @@ def valid_request_id(candidate: str) -> bool:
 
 def current_log_context() -> dict[str, object]:
     return {
-        name: value
-        for name, variable in _CONTEXT.items()
-        if (value := variable.get()) is not None
+        name: value for name, variable in _CONTEXT.items() if (value := variable.get()) is not None
     }
 
 
@@ -221,9 +217,7 @@ def _sanitize_value(value: object, *, depth: int, seen: set[int]) -> object:
                     else _sanitize_value(item, depth=depth + 1, seen=seen)
                 )
             if len(items) > _MAX_COLLECTION_ITEMS:
-                mapping_result["metadata_items_truncated"] = (
-                    len(items) - _MAX_COLLECTION_ITEMS
-                )
+                mapping_result["metadata_items_truncated"] = len(items) - _MAX_COLLECTION_ITEMS
             return mapping_result
         finally:
             seen.remove(identity)
@@ -236,9 +230,7 @@ def _sanitize_value(value: object, *, depth: int, seen: set[int]) -> object:
                 for item in values[:_MAX_COLLECTION_ITEMS]
             ]
             if len(values) > _MAX_COLLECTION_ITEMS:
-                sequence_result.append(
-                    f"[TRUNCATED_ITEMS:{len(values) - _MAX_COLLECTION_ITEMS}]"
-                )
+                sequence_result.append(f"[TRUNCATED_ITEMS:{len(values) - _MAX_COLLECTION_ITEMS}]")
             return sequence_result
         finally:
             seen.remove(identity)

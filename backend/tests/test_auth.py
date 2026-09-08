@@ -203,9 +203,15 @@ def test_unsafe_routes_share_origin_csrf_and_no_store_dependencies() -> None:
         "/api/v1/inventory/preview",
         "/api/v1/inventory/resolve",
     }
+    public_auth_posts = {
+        "/api/v1/auth/login",
+        "/api/v1/auth/activate",
+        "/api/v1/auth/mfa/verify",
+        "/api/v1/auth/mfa/enroll/confirm",
+    }
     for route in unsafe_routes:
         dependencies = _dependency_names(route)
-        if route.path == "/api/v1/auth/login":
+        if route.path in public_auth_posts:
             assert "require_allowed_origin" in dependencies
         elif route.path in read_only_posts:
             assert "get_current_session" in dependencies
@@ -307,7 +313,12 @@ async def test_auth_api_dependencies_delegate_and_bind_csrf(
         LoginRequest(username="admin", password="password"), raw, response, factory, None
     )
     assert result.username == "admin"
-    assert len(response.headers.getlist("set-cookie")) == 2
+    cookies = response.headers.getlist("set-cookie")
+    assert len(cookies) == 3
+    assert any(
+        settings.auth_challenge_cookie_name in value and "Max-Age=0" in value
+        for value in cookies
+    )
 
     authenticated = _request(
         path="/api/v1/hosts",
