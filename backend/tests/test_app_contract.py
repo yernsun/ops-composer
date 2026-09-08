@@ -137,3 +137,8 @@ def test_operator_cli_exposes_bootstrap_worker_and_configuration() -> None:
     assert bootstrap.exit_code == 0
     assert "--username" in unstyle(bootstrap.stdout)
     assert "--password" not in unstyle(bootstrap.stdout)
+
+    password_reset = command.invoke(cli_app, ["admin", "password-reset", "--help"])
+    assert password_reset.exit_code == 0
+    assert "--username" in unstyle(password_reset.stdout)
+    assert "--password" not in unstyle(password_reset.stdout)

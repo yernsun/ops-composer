@@ -530,9 +530,15 @@ def test_cli_startup_migration_failures_and_admin_bootstrap_paths(
         return pool
 
     bootstrap_mode = {"value": "success"}
+    password_reset_values: list[tuple[str, str, str]] = []
 
     class _AuthService:
-        def __init__(self, _factory: UnitOfWorkFactory, _settings: Settings) -> None:
+        def __init__(
+            self,
+            _factory: UnitOfWorkFactory,
+            _settings: Settings,
+            **_kwargs: object,
+        ) -> None:
             pass
 
         async def bootstrap(self, username: str, _password: str) -> object:
@@ -540,6 +546,17 @@ def test_cli_startup_migration_failures_and_admin_bootstrap_paths(
                 raise AdminAlreadyExistsError()
             if bootstrap_mode["value"] == "invalid":
                 raise ValueError("password is invalid")
+            return type("Identity", (), {"username": username})()
+
+        async def break_glass_reset_password(
+            self,
+            username: str,
+            confirmation: str,
+            password: str,
+        ) -> object:
+            password_reset_values.append((username, confirmation, password))
+            if bootstrap_mode["value"] == "reset-invalid":
+                raise ValueError("confirmation is invalid")
             return type("Identity", (), {"username": username})()
 
     monkeypatch.setattr(cli_module, "get_settings", lambda: Settings())
@@ -571,6 +588,33 @@ def test_cli_startup_migration_failures_and_admin_bootstrap_paths(
     )
     assert invalid.exit_code == 2
     assert "password is invalid" in invalid.stderr
+
+    bootstrap_mode["value"] = "success"
+    reset = command.invoke(
+        cli_module.app,
+        ["admin", "password-reset", "--username", "operator"],
+        input=(
+            "RESET PASSWORD FOR operator\n"
+            "replacement-long-password\n"
+            "replacement-long-password\n"
+        ),
+    )
+    assert reset.exit_code == 0
+    assert "password reset for 'operator'" in reset.stdout
+    assert password_reset_values[-1] == (
+        "operator",
+        "RESET PASSWORD FOR operator",
+        "replacement-long-password",
+    )
+
+    bootstrap_mode["value"] = "reset-invalid"
+    denied_reset = command.invoke(
+        cli_module.app,
+        ["admin", "password-reset", "--username", "operator"],
+        input="wrong\nreplacement-long-password\nreplacement-long-password\n",
+    )
+    assert denied_reset.exit_code == 2
+    assert "confirmation is invalid" in denied_reset.stderr
     assert all(pool.opened and pool.closed for pool in pools)
 
 

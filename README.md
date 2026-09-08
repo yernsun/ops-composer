@@ -59,6 +59,10 @@ code, TOTP seed, and ten recovery codes are each shown only once. Credential cha
 governance, and key rotation require password plus MFA reauthentication within the previous ten
 minutes. If the only owner loses every factor, use the audited, confirmation-protected
 `ops-composer admin mfa-reset` break-glass command on the server.
+If the sole active OWNER loses the password, use
+`ops-composer admin password-reset --username admin`. The command requires an exact confirmation
+phrase, reads the new password from a hidden prompt instead of argv, revokes every user session,
+and leaves MFA unchanged.
 
 ## Playbook sources
 

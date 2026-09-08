@@ -360,6 +360,67 @@ def admin_mfa_reset(
     )
 
 
+@admin.command("password-reset")
+def admin_password_reset(
+    username: Annotated[str, typer.Option("--username", "-u")],
+) -> None:
+    """Break glass for the sole active OWNER; secrets are never accepted on argv."""
+
+    normalized = username.strip().casefold()
+    phrase = f"RESET PASSWORD FOR {normalized}"
+    typer.secho(
+        "Break-glass replaces the password and revokes every session. MFA is unchanged.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+    confirmation = typer.prompt(f"Type exactly '{phrase}'")
+    password = typer.prompt(
+        "New administrator password",
+        hide_input=True,
+        confirmation_prompt=True,
+    )
+
+    async def run() -> str:
+        settings = get_settings()
+        pool = create_pool(settings.database_url)
+        await pool.open()
+        try:
+            service = AuthService(
+                UnitOfWorkFactory(pool),
+                settings,
+                audit_source=AuditSource.CLI,
+            )
+            user = await service.break_glass_reset_password(
+                normalized,
+                confirmation,
+                password,
+            )
+            return user.username
+        finally:
+            await pool.close()
+
+    try:
+        reset_username = asyncio.run(run())
+    except ValueError as error:
+        log_event(
+            AuditAction.USER_PASSWORD_CHANGED,
+            AuditOutcome.DENIED,
+            source=AuditSource.CLI,
+            severity=AuditSeverity.WARNING,
+            message="administrator password break-glass reset denied",
+            error_code="password_reset_denied",
+            failure_stage="admin_password_reset",
+            retryable=False,
+            metadata={"break_glass": True},
+        )
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+    typer.secho(
+        f"password reset for '{reset_username}'; all sessions revoked",
+        fg=typer.colors.GREEN,
+    )
+
+
 @app.command("purge-expired-auth")
 def purge_expired_auth(
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,

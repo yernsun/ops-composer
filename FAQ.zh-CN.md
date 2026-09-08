@@ -17,6 +17,17 @@ docker compose run --rm api ops-composer admin bootstrap --username admin
 密码只能通过交互提示输入。该用户成为首个 `OWNER`，并在下一次密码登录时强制注册 TOTP。
 OWNER 可在用户治理页面创建其他账号；系统只展示一次 24 小时激活码，不依赖邮件服务。
 
+## 唯一 OWNER 忘记密码怎么办？
+
+在服务器项目目录中运行：
+
+```bash
+docker compose exec api ops-composer admin password-reset --username admin
+```
+
+该命令仅允许重置唯一启用的 OWNER，要求输入精确确认短语，并通过隐藏交互提示读取两次新密码；
+密码不会出现在 argv 或日志中。成功后全部 Session 会被撤销，MFA 保持不变。
+
 ## 为什么生产配置校验失败？
 
 生产模式要求：非默认 PostgreSQL URL、HTTPS `APP_ALLOWED_ORIGINS`、Secure Cookie、至少

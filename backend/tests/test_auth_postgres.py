@@ -268,6 +268,48 @@ async def test_postgres_migrations_owner_mfa_sessions_and_shared_rate_limits() -
             assert reset.mfa_enrollment_required
             with pytest.raises(ValueError):
                 await service.break_glass_reset_mfa("admin", "wrong confirmation")
+
+            password_reset = await service.break_glass_reset_password(
+                "admin",
+                "RESET PASSWORD FOR admin",
+                "replacement owner battery staple",
+            )
+            assert password_reset.username == "admin"
+            with pytest.raises(InvalidCredentialsError):
+                await service.login(
+                    "admin",
+                    "correct horse battery staple",
+                    "post-reset-client",
+                )
+            post_reset_login = await service.login(
+                "admin",
+                "replacement owner battery staple",
+                "post-reset-client",
+            )
+            assert isinstance(post_reset_login, IssuedChallenge)
+            assert post_reset_login.purpose is ChallengePurpose.MFA_ENROLLMENT
+            with pytest.raises(ValueError):
+                await service.break_glass_reset_password(
+                    "admin",
+                    "wrong confirmation",
+                    "another replacement battery staple",
+                )
+            async with pool.connection() as connection:
+                audit_row = await (
+                    await connection.execute(
+                        sql.SQL(
+                            "SELECT source, event_outcome, metadata FROM audit_events "
+                            "WHERE event_action = 'USER_PASSWORD_CHANGED' "
+                            "AND metadata @> %(expected_metadata)s::jsonb "
+                            "ORDER BY audit_event_id DESC LIMIT 1"
+                        ),
+                        {"expected_metadata": '{"break_glass":true}'},
+                    )
+                ).fetchone()
+            assert audit_row is not None
+            assert audit_row["source"] == "CLI"
+            assert audit_row["event_outcome"] == "SUCCEEDED"
+            assert audit_row["metadata"]["sessions_revoked"] is True
         finally:
             await pool.close()
     finally:

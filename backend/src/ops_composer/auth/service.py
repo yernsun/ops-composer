@@ -932,6 +932,59 @@ class AuthService:
             }
         )
 
+    async def break_glass_reset_password(
+        self,
+        username: str,
+        confirmation: str,
+        new_password: str,
+    ) -> UserIdentity:
+        normalized = canonical_username(username)
+        self._validate_username(normalized)
+        expected = f"RESET PASSWORD FOR {normalized}"
+        if confirmation != expected:
+            raise ValueError(f"confirmation must exactly match: {expected}")
+        self._validate_password(new_password)
+        password_hash = await asyncio.to_thread(hash_password, new_password)
+        now = utc_now()
+        async with self._unit_of_work_factory() as unit_of_work:
+            user = await unit_of_work.auth.find_user_by_username(normalized)
+            if (
+                user is None
+                or user.identity.role is not UserRole.OWNER
+                or user.identity.status is not UserStatus.ACTIVE
+                or await unit_of_work.auth.count_active_owners() != 1
+            ):
+                raise ValueError(
+                    "break-glass is allowed only for the sole active OWNER; use another OWNER"
+                )
+            await unit_of_work.auth.update_password_hash(
+                user.identity.user_id,
+                password_hash,
+                now,
+            )
+            await unit_of_work.auth.delete_user_sessions(user.identity.user_id)
+            event = new_audit_event(
+                AuditAction.USER_PASSWORD_CHANGED,
+                AuditOutcome.SUCCEEDED,
+                source=AuditSource.CLI,
+                actor_user_id=user.identity.user_id,
+                resource_type="user",
+                resource_id=user.identity.user_id,
+                metadata={
+                    "break_glass": True,
+                    "confirmation_phrase_verified": True,
+                    "sessions_revoked": True,
+                },
+            )
+            await unit_of_work.audit.append(event)
+        emit_audit_event(event)
+        return user.identity.model_copy(
+            update={
+                "version": user.identity.version + 1,
+                "updated_at": now,
+            }
+        )
+
     async def resolve(self, session_token: str) -> SessionPrincipal:
         async with self._unit_of_work_factory() as unit_of_work:
             principal = await unit_of_work.auth.resolve_session(

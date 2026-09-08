@@ -13,6 +13,18 @@ The password is accepted only through the interactive prompt. This account becom
 `OWNER` and must enroll TOTP at its next password login. Owners create other accounts in the Users
 page; a 24-hour activation code is shown once and no email service is required.
 
+## What if the sole OWNER forgets the password?
+
+Run this from the server project directory:
+
+```bash
+docker compose exec api ops-composer admin password-reset --username admin
+```
+
+The command is limited to the sole active OWNER, requires an exact confirmation phrase, and reads
+the new password twice from a hidden prompt. It never accepts the password on argv, revokes every
+session after success, and leaves MFA unchanged.
+
 ## Why does production configuration fail validation?
 
 Production requires a non-default PostgreSQL URL, HTTPS allowed origins, Secure cookies, a unique

@@ -64,6 +64,9 @@ Bootstrap 用户为首个 OWNER。已有部署升级后会撤销旧 Session，�
 TOTP 注册。OWNER 创建用户后只展示一次 24 小时激活码；TOTP Seed 和 10 个恢复码也只展示
 一次。用户治理、Credential 写入和 Key 轮换要求最近 10 分钟内完成密码加 MFA 再认证。唯一
 OWNER 丢失全部因子时，可在服务端使用带确认短语并完整审计的 `ops-composer admin mfa-reset`。
+唯一启用的 OWNER 忘记密码时，可使用 `ops-composer admin password-reset --username admin`；
+该 break-glass 命令要求精确确认短语并隐藏输入新密码，成功后撤销该用户的全部 Session，且不会
+重置 MFA。密码和确认内容都不会通过命令行参数传入。
 
 ## 业务日志与审计
 
