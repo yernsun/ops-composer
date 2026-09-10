@@ -64,8 +64,8 @@ Verified `linux/amd64` and `linux/arm64` release images are published at
 `ghcr.io/yernsun/ops-composer`. To deploy the current release instead of building locally:
 
 ```bash
-docker pull ghcr.io/yernsun/ops-composer:v0.1.1
-OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.1 \
+docker pull ghcr.io/yernsun/ops-composer:v0.1.0
+OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.0 \
   docker compose up -d --no-build
 ```
 

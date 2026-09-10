@@ -11,12 +11,12 @@ license, warranty, hosted service, or support entitlement.
 Release images support `linux/amd64` and `linux/arm64`. For the current release:
 
 ```bash
-docker pull ghcr.io/yernsun/ops-composer:v0.1.1
-OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.1 \
+docker pull ghcr.io/yernsun/ops-composer:v0.1.0
+OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.0 \
   docker compose up -d --no-build
 ```
 
-`v0.1.1` and `0.1.1` identify the release, `0.1` follows the newest compatible patch release, and
+`v0.1.0` and `0.1.0` identify the release, `0.1` follows the newest compatible patch release, and
 `latest` follows the newest stable release. Tags are convenient pointers; use the manifest digest
 recorded on the GitHub Release when deployment policy requires an immutable identity:
 
@@ -56,7 +56,7 @@ scan is evidence, not a legal opinion or a guarantee that no vulnerability exist
 Compare the pulled manifest with the digest asset on the matching GitHub Release:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/yernsun/ops-composer:v0.1.1
+docker buildx imagetools inspect ghcr.io/yernsun/ops-composer:v0.1.0
 ```
 
 With GitHub CLI installed, verify the GitHub artifact attestation against this repository:

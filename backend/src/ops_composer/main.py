@@ -191,7 +191,7 @@ def create_app() -> FastAPI:
     )
     application = FastAPI(
         title="OpsComposer API",
-        version="0.1.1",
+        version="0.1.0",
         lifespan=lifespan,
     )
     application.add_middleware(RequestContextMiddleware)

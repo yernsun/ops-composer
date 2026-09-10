@@ -10,12 +10,12 @@
 发行镜像支持 `linux/amd64` 和 `linux/arm64`。当前版本可按以下方式运行：
 
 ```bash
-docker pull ghcr.io/yernsun/ops-composer:v0.1.1
-OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.1 \
+docker pull ghcr.io/yernsun/ops-composer:v0.1.0
+OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.0 \
   docker compose up -d --no-build
 ```
 
-`v0.1.1` 与 `0.1.1` 指向该正式版本，`0.1` 跟随该 minor 系列的最新 patch，`latest` 跟随最新
+`v0.1.0` 与 `0.1.0` 指向该正式版本，`0.1` 跟随该 minor 系列的最新 patch，`latest` 跟随最新
 稳定版本。Tag 只是便捷指针；部署策略要求不可变身份时，应使用对应 GitHub Release 中记录的
 Manifest Digest：
 
@@ -50,7 +50,7 @@ Tag，不能任意选择分支作为发行源码。
 可将拉取到的 Manifest 与对应 GitHub Release 中的 Digest 文件核对：
 
 ```bash
-docker buildx imagetools inspect ghcr.io/yernsun/ops-composer:v0.1.1
+docker buildx imagetools inspect ghcr.io/yernsun/ops-composer:v0.1.0
 ```
 
 安装 GitHub CLI 后，可验证该仓库签发的 GitHub Artifact Attestation：

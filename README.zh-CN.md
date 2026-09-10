@@ -71,8 +71,8 @@ Vue 静态资源已构建到镜像并由 FastAPI 提供。
 `ghcr.io/yernsun/ops-composer`。使用当前发行镜像而不是本地构建：
 
 ```bash
-docker pull ghcr.io/yernsun/ops-composer:v0.1.1
-OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.1 \
+docker pull ghcr.io/yernsun/ops-composer:v0.1.0
+OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.0 \
   docker compose up -d --no-build
 ```
 
