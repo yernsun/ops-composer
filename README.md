@@ -48,6 +48,7 @@ written agreement. A commercial software license is not currently offered.
 - [Security reporting](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 - [CLA readiness policy](CLA_POLICY.md)
+- [Container distribution and verification](CONTAINER.md)
 
 The CLA process is not active yet. Until its legal recipient, final terms, privacy notice, and
 acceptance records are operational, external copyrightable contributions must not be merged. This
@@ -58,6 +59,21 @@ rights already granted.
 
 Production has exactly four services: `db`, one-shot `migrate`, `api`, and `worker`. API and worker
 share one multi-stage image; FastAPI serves the compiled Vue application.
+
+Verified `linux/amd64` and `linux/arm64` release images are published at
+`ghcr.io/yernsun/ops-composer`. To deploy the current release instead of building locally:
+
+```bash
+docker pull ghcr.io/yernsun/ops-composer:v0.1.1
+OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.1 \
+  docker compose up -d --no-build
+```
+
+For immutable deployment, replace the tag with the manifest digest recorded on the matching
+GitHub Release. See [container distribution and verification](CONTAINER.md) for tag semantics,
+SBOM, provenance, corresponding source, and verification commands.
+
+To build from the checked-out source instead:
 
 ```bash
 cp .env.example .env

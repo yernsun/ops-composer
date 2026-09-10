@@ -403,7 +403,7 @@ beforeEach(() => {
     'run-events': [event],
     'system-info': {
       name: 'OpsComposer',
-      version: '0.1.0',
+      version: '0.1.1',
       database: 'PostgreSQL',
       queue: 'PostgreSQL SKIP LOCKED',
       projectForgeCommit: 'test',

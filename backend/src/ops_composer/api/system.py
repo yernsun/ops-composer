@@ -71,7 +71,7 @@ async def system_info(_: CurrentSessionDep) -> dict[str, object]:
     settings = get_settings()
     return {
         "name": "OpsComposer",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "database": "PostgreSQL 16 / Psycopg 3",
         "queue": "PostgreSQL",
         "projectForgeCommit": PROJECT_FORGE_COMMIT,

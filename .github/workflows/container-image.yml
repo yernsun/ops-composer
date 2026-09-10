@@ -1,0 +1,450 @@
+name: Container image
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/container-image.yml
+      - .dockerignore
+      - Dockerfile
+      - backend/**
+      - frontend/**
+      - third_party/**
+      - docs/legal/**
+      - AGENTS.md
+      - LICENSE
+      - NOTICE.md
+      - THIRD_PARTY_NOTICES.md
+      - SUPPORT.md
+      - SUPPORT.zh-CN.md
+      - SECURITY.md
+      - COMMERCIAL_SERVICES.md
+      - COMMERCIAL_SERVICES.zh-CN.md
+      - CONTRIBUTING.md
+      - CONTRIBUTING.zh-CN.md
+      - CLA_POLICY.md
+      - CLA_POLICY.zh-CN.md
+      - CONTAINER.md
+      - CONTAINER.zh-CN.md
+  push:
+    branches:
+      - main
+    tags:
+      - v*.*.*
+    paths:
+      - .github/workflows/container-image.yml
+      - .dockerignore
+      - Dockerfile
+      - backend/**
+      - frontend/**
+      - third_party/**
+      - docs/legal/**
+      - AGENTS.md
+      - LICENSE
+      - NOTICE.md
+      - THIRD_PARTY_NOTICES.md
+      - SUPPORT.md
+      - SUPPORT.zh-CN.md
+      - SECURITY.md
+      - COMMERCIAL_SERVICES.md
+      - COMMERCIAL_SERVICES.zh-CN.md
+      - CONTRIBUTING.md
+      - CONTRIBUTING.zh-CN.md
+      - CLA_POLICY.md
+      - CLA_POLICY.zh-CN.md
+      - CONTAINER.md
+      - CONTAINER.zh-CN.md
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing semantic-version tag to rebuild and publish
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Existing semantic-version tag to rebuild and publish
+        required: true
+        type: string
+
+concurrency:
+  group: container-${{ github.repository }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  validate:
+    name: Validate source identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      created: ${{ steps.identity.outputs.created }}
+      major_minor: ${{ steps.identity.outputs.major_minor }}
+      publish: ${{ steps.identity.outputs.publish }}
+      release_tag: ${{ steps.identity.outputs.release_tag }}
+      source_ref: ${{ steps.identity.outputs.source_ref }}
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+      stable: ${{ steps.identity.outputs.stable }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - name: Check out the requested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+
+      - name: Verify versions and release tag
+        id: identity
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          version_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          project_version="$(python3 -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("backend/pyproject.toml").read_text())["project"]["version"])')"
+          frontend_version="$(python3 -c 'import json,pathlib; print(json.loads(pathlib.Path("frontend/package.json").read_text())["version"])')"
+          api_version="$(python3 -c 'import pathlib,re; print(re.search(r"version=\"([^\"]+)\"", pathlib.Path("backend/src/ops_composer/main.py").read_text()).group(1))')"
+          system_version="$(python3 -c 'import pathlib,re; print(re.search(r"\"version\": \"([^\"]+)\"", pathlib.Path("backend/src/ops_composer/api/system.py").read_text()).group(1))')"
+
+          if [[ ! "$project_version" =~ $version_pattern ]]; then
+            echo "Backend version is not strict SemVer: $project_version" >&2
+            exit 1
+          fi
+          major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          stable=true
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            stable=false
+          fi
+          if [[ "$frontend_version" != "$project_version" || "$api_version" != "$project_version" || "$system_version" != "$project_version" ]]; then
+            echo "Release versions disagree: backend=$project_version frontend=$frontend_version api=$api_version system=$system_version" >&2
+            exit 1
+          fi
+
+          publish=false
+          release_tag=""
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            publish=true
+            release_tag="$REQUESTED_TAG"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF_TYPE" == "tag" ]]; then
+            publish=true
+            release_tag="$GITHUB_REF_NAME"
+          fi
+
+          source_sha="$(git rev-parse HEAD)"
+          source_ref="$source_sha"
+          if [[ "$publish" == "true" ]]; then
+            if [[ "$release_tag" != "v$project_version" ]]; then
+              echo "Release tag $release_tag must exactly match project version v$project_version" >&2
+              exit 1
+            fi
+            tag_sha="$(git rev-parse "${release_tag}^{commit}")"
+            if [[ "$tag_sha" != "$source_sha" ]]; then
+              echo "Checked-out source $source_sha does not match $release_tag at $tag_sha" >&2
+              exit 1
+            fi
+            source_ref="refs/tags/$release_tag"
+          fi
+
+          created="$(git show -s --format=%cI HEAD)"
+          {
+            echo "created=$created"
+            echo "major_minor=$major_minor"
+            echo "publish=$publish"
+            echo "release_tag=$release_tag"
+            echo "source_ref=$source_ref"
+            echo "source_sha=$source_sha"
+            echo "stable=$stable"
+            echo "version=$project_version"
+          } >> "$GITHUB_OUTPUT"
+
+  scan:
+    name: Build, smoke test, and scan linux/amd64
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_ref }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build scan candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          build-args: |
+            OPS_COMPOSER_CREATED=${{ needs.validate.outputs.created }}
+            OPS_COMPOSER_REVISION=${{ needs.validate.outputs.source_sha }}
+            OPS_COMPOSER_VERSION=${{ needs.validate.outputs.version }}
+          cache-from: type=gha,scope=ops-composer-container-amd64
+          cache-to: type=gha,mode=max,scope=ops-composer-container-amd64
+          context: .
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ops-composer:scan
+          target: runtime
+
+      - name: Verify linux/arm64 build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          build-args: |
+            OPS_COMPOSER_CREATED=${{ needs.validate.outputs.created }}
+            OPS_COMPOSER_REVISION=${{ needs.validate.outputs.source_sha }}
+            OPS_COMPOSER_VERSION=${{ needs.validate.outputs.version }}
+          cache-from: type=gha,scope=ops-composer-container-arm64
+          cache-to: type=gha,mode=max,scope=ops-composer-container-arm64
+          context: .
+          outputs: type=cacheonly
+          platforms: linux/arm64
+          provenance: false
+          sbom: false
+          target: runtime
+
+      - name: Smoke test image and legal bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint ops-composer ops-composer:scan --help >/dev/null
+          docker run --rm --entrypoint sh ops-composer:scan -ec '
+            test "$(id -u)" = 10001
+            test "$HOME" = /var/lib/ops-composer
+            test -f /app/legal/LICENSE
+            test -f /app/legal/THIRD_PARTY_NOTICES.md
+            test -f /app/legal/CONTAINER.md
+            test -f /app/static/legal/frontend-build.spdx.json
+            ansible-playbook --version >/dev/null
+            ssh -V >/dev/null 2>&1
+            sshpass -V >/dev/null
+            tini --version >/dev/null
+          '
+          docker run --rm --entrypoint cat ops-composer:scan /app/static/legal/frontend-build.spdx.json > frontend-build.spdx.json
+          python3 -m json.tool frontend-build.spdx.json >/dev/null
+          image_user="$(docker image inspect ops-composer:scan --format '{{.Config.User}}')"
+          image_version="$(docker image inspect ops-composer:scan --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+          test "$image_user" = "ops-composer"
+          test "$image_version" = "${{ needs.validate.outputs.version }}"
+
+      - name: Generate complete vulnerability and secret report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: ops-composer:scan
+          scanners: vuln,secret
+          vuln-type: os,library
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          list-all-pkgs: true
+          format: json
+          output: container-scan-linux-amd64.json
+          exit-code: "0"
+          timeout: 15m
+
+      - name: Reject detected secrets
+        shell: bash
+        run: |
+          python3 -c 'import json, pathlib; report=json.loads(pathlib.Path("container-scan-linux-amd64.json").read_text()); count=sum(len(result.get("Secrets") or []) for result in report.get("Results") or []); print(f"detected secrets: {count}"); raise SystemExit(1 if count else 0)'
+
+      - name: Reject critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          skip-setup-trivy: true
+          cache: false
+          scan-type: image
+          image-ref: ops-composer:scan
+          scanners: vuln
+          vuln-type: os,library
+          severity: CRITICAL
+          ignore-unfixed: false
+          format: table
+          exit-code: "1"
+          timeout: 15m
+
+      - name: Preserve scan evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: container-scan-linux-amd64
+          path: |
+            container-scan-linux-amd64.json
+            frontend-build.spdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    name: Publish multi-platform image
+    if: needs.validate.outputs.publish == 'true' && github.repository == 'yernsun/ops-composer'
+    needs:
+      - validate
+      - scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+    steps:
+      - name: Check out validated release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_ref }}
+
+      - name: Download scan evidence
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: container-scan-linux-amd64
+          path: release-evidence
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Prepare image tags
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'tags<<EOF'
+            echo "$IMAGE_NAME:${{ needs.validate.outputs.release_tag }}"
+            echo "$IMAGE_NAME:${{ needs.validate.outputs.version }}"
+            if [[ "${{ needs.validate.outputs.stable }}" == "true" ]]; then
+              echo "$IMAGE_NAME:${{ needs.validate.outputs.major_minor }}"
+              echo "$IMAGE_NAME:latest"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push release image
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          annotations: |
+            index:org.opencontainers.image.description=A multi-administrator Ansible operations console backed by PostgreSQL
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+          build-args: |
+            OPS_COMPOSER_CREATED=${{ needs.validate.outputs.created }}
+            OPS_COMPOSER_REVISION=${{ needs.validate.outputs.source_sha }}
+            OPS_COMPOSER_VERSION=${{ needs.validate.outputs.version }}
+          cache-from: |
+            type=gha,scope=ops-composer-container-amd64
+            type=gha,scope=ops-composer-container-arm64
+            type=gha,scope=ops-composer-container-multi
+          cache-to: type=gha,mode=max,scope=ops-composer-container-multi
+          context: .
+          labels: |
+            org.opencontainers.image.created=${{ needs.validate.outputs.created }}
+            org.opencontainers.image.revision=${{ needs.validate.outputs.source_sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          provenance: mode=max
+          push: true
+          sbom: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          target: runtime
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Assemble release evidence
+        id: evidence
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          prefix="ops-composer-$RELEASE_TAG"
+          digest_file="release-evidence/$prefix-image-digest.txt"
+          sbom_file="release-evidence/$prefix-sbom-bundle.json"
+          scan_file="release-evidence/$prefix-trivy-linux-amd64.json"
+          frontend_sbom_file="release-evidence/$prefix-frontend-build.spdx.json"
+          checksum_file="release-evidence/$prefix-evidence.sha256"
+          notes_file="release-evidence/$prefix-container.md"
+
+          mv release-evidence/container-scan-linux-amd64.json "$scan_file"
+          mv release-evidence/frontend-build.spdx.json "$frontend_sbom_file"
+          printf '%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" > "$digest_file"
+          docker buildx imagetools inspect "$IMAGE_NAME@$IMAGE_DIGEST" --format "{{ json .SBOM }}" > "$sbom_file"
+          python3 -m json.tool "$sbom_file" >/dev/null
+          jq -e 'type != "null" and length > 0' "$sbom_file" >/dev/null
+          sha256sum "$digest_file" "$sbom_file" "$frontend_sbom_file" "$scan_file" > "$checksum_file"
+          {
+            printf '## Container image\n\n'
+            printf "Multi-platform image: \`%s:%s\` (\`linux/amd64\`, \`linux/arm64\`)\n\n" "$IMAGE_NAME" "$RELEASE_TAG"
+            printf "Manifest digest: \`%s\`\n\n" "$IMAGE_DIGEST"
+            printf 'The attached files record the manifest digest, registry-attached image SBOM, complete frontend build-dependency SPDX inventory, linux/amd64 Trivy report, and evidence checksums. Build provenance is available through GitHub Artifact Attestations. See [CONTAINER.md](https://github.com/%s/blob/%s/CONTAINER.md) for verification and license details.\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+          } > "$notes_file"
+
+          {
+            echo "checksum_file=$checksum_file"
+            echo "digest_file=$digest_file"
+            echo "frontend_sbom_file=$frontend_sbom_file"
+            echo "notes_file=$notes_file"
+            echo "sbom_file=$sbom_file"
+            echo "scan_file=$scan_file"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Preserve release evidence artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: container-evidence-${{ needs.validate.outputs.release_tag }}
+          path: release-evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Create or update GitHub Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          STABLE: ${{ needs.validate.outputs.stable }}
+        run: |
+          set -euo pipefail
+          assets=(
+            "${{ steps.evidence.outputs.digest_file }}"
+            "${{ steps.evidence.outputs.sbom_file }}"
+            "${{ steps.evidence.outputs.frontend_sbom_file }}"
+            "${{ steps.evidence.outputs.scan_file }}"
+            "${{ steps.evidence.outputs.checksum_file }}"
+          )
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            release_flags=(--verify-tag --title "OpsComposer $RELEASE_TAG" --generate-notes --notes-file "${{ steps.evidence.outputs.notes_file }}")
+            if [[ "$STABLE" == "true" ]]; then
+              release_flags+=(--latest)
+            else
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" "${release_flags[@]}" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+          fi

@@ -39,6 +39,7 @@ AGPL 本身不存在“企业使用必须付费”的附加条件；但分发或
 - [安全漏洞报告](SECURITY.md)
 - [参与贡献](CONTRIBUTING.zh-CN.md)
 - [CLA 准备政策](CLA_POLICY.zh-CN.md)
+- [容器镜像发行与验证](CONTAINER.zh-CN.md)
 
 CLA 流程目前尚未启用。在接收授权的法律主体、最终条款、隐私声明和签署记录机制正式生效前，
 不得合并外部贡献者受著作权保护的内容。该门禁用于保护未来评估双许可证所需的权利链，不会改变
@@ -65,6 +66,20 @@ CLA 流程目前尚未启用。在接收授权的法律主体、最终条款、�
 
 生产配置只包含 `db`、一次性 `migrate`、`api` 和 `worker`。API 与 Worker 使用同一镜像，
 Vue 静态资源已构建到镜像并由 FastAPI 提供。
+
+经过验证的 `linux/amd64` 与 `linux/arm64` 发行镜像发布在
+`ghcr.io/yernsun/ops-composer`。使用当前发行镜像而不是本地构建：
+
+```bash
+docker pull ghcr.io/yernsun/ops-composer:v0.1.1
+OPS_COMPOSER_IMAGE=ghcr.io/yernsun/ops-composer:v0.1.1 \
+  docker compose up -d --no-build
+```
+
+需要不可变部署时，应将 Tag 替换为对应 GitHub Release 记录的 Manifest Digest。Tag 语义、
+SBOM、Provenance、对应源码和验证命令见[容器镜像发行与验证](CONTAINER.zh-CN.md)。
+
+需要从当前源码自行构建时：
 
 ```bash
 cp .env.example .env

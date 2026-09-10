@@ -1,7 +1,7 @@
 {
   "name": "ops-composer-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "AGPL-3.0-only",
   "type": "module",
   "engines": {
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "npm run api:check && npm run i18n:check && vue-tsc -b && vite build && node scripts/generate-license-bundle.mjs",
+    "build": "npm run api:check && npm run i18n:check && vue-tsc -b && vite build && node scripts/generate-license-bundle.mjs && npm sbom --sbom-format=spdx > dist/legal/frontend-build.spdx.json",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "vue-tsc -b",
     "test": "vitest run",

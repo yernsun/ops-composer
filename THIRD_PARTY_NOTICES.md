@@ -72,10 +72,15 @@ the OpsComposer license/policies, compliance notes, and preserved upstream licen
 
 ## Container and build-tool material
 
-The release image additionally contains or derives from Node.js Bookworm Slim (build stage),
-Python 3.13 Slim Bookworm, Debian packages, OpenSSH, sshpass, tini, util-linux, CA certificates,
-and uv 0.12.5. Their upstream terms remain applicable. uv 0.12.5 is offered under Apache-2.0 OR
-MIT; copies are preserved in `third_party/uv/`. Debian package copyright files and Python
-`.dist-info` licenses must remain in any distributed image.
+The release image additionally contains or derives from Node.js 24 Bookworm Slim build image
+`sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553`, Python 3.13
+Alpine 3.23 runtime image
+`sha256:75f27d686432419c9d42420b2b9ef605868c7a0682a6be10a6601fad46c2df01`, Alpine packages,
+OpenSSH, sshpass, tini, libuuid (from util-linux), CA certificates, and uv 0.12.5 image
+`sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1`. Their upstream
+terms remain applicable. uv 0.12.5 is offered under Apache-2.0 OR MIT; copies are preserved in
+`third_party/uv/`. Alpine's installed-package database and Python `.dist-info` licenses must remain
+in any distributed image. See [CONTAINER.md](CONTAINER.md) for the image evidence and corresponding
+source process.
 
 This notice does not grant trademark rights and is not legal advice.

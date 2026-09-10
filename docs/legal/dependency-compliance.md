@@ -40,15 +40,18 @@ AGPL-3.0 与 GPLv3 组合有许可证提供的兼容机制，但未来专有发�
 
 ### 4. 容器不是“只有应用代码”
 
-最终镜像还包含 Python/Debian 基础镜像、OpenSSH、`sshpass`（GPL-2.0-or-later）、tini、
-util-linux、CA 证书和从独立镜像复制的 uv/uvx。必须保留 Debian `/usr/share/doc/*/copyright`、
+最终镜像还包含 Python/Alpine 基础镜像、OpenSSH、`sshpass`（GPL-2.0-or-later）、tini、
+libuuid（来自 util-linux）、CA 证书和从独立镜像复制的 uv/uvx。必须保留 Alpine
+`/lib/apk/db/installed`、
 Python `.dist-info` 许可证、uv 双许可证文本和项目第三方通知。公开 OCI 镜像时，还要为适用的
 GPL/LGPL/MPL 部件保留可追溯的精确对应源码或有效获取方式。
 
-### 5. 镜像标签与证据留存
+### 5. 镜像 Digest 与证据留存
 
-基础镜像当前按标签引用而非 Digest。相同标签内容可能变化，导致 SBOM、漏洞和许可证结论不可复现。
-正式发行应固定 Digest，并保存构建日志、锁文件、SBOM、扫描报告、上游源码版本和许可证包。
+Node 24 Bookworm Slim、Python 3.13 Alpine 3.23 与 uv 0.12.5 构建镜像现已同时保留可读 Tag 和
+固定的多平台 OCI Digest；Digest 只能通过有审查记录的提交更新。Alpine 软件源元数据和漏洞库仍会
+随时间变化，因此基础镜像固定并不等于整个构建按字节可复现。正式发行还必须保存构建日志、锁文件、
+每个平台的 SBOM、扫描报告、上游源码版本、最终 Manifest Digest 和许可证包。
 
 ## 每次发行的强制清单
 
@@ -65,7 +68,9 @@ GPL/LGPL/MPL 部件保留可追溯的精确对应源码或有效获取方式。
 ## 当前发布门禁
 
 - AGPL 源码发布：可行，但必须带完整 `LICENSE`、第三方通知、依赖许可证和对应源码入口。
-- 社区容器发布：完成上述容器通知、SBOM、源码留存和 Digest 固定后再发布。
+- 社区容器发布：`.github/workflows/container-image.yml` 实施基础镜像 Digest 固定检查、Critical
+  漏洞门禁、AMD64/ARM64 构建、SBOM、Provenance、Manifest Digest 和 Release 证据留存；每次
+  发行仍须人工复核扫描结果、第三方通知、对应源码可用性和 GHCR 公开可见性。
 - 专有商业组合发行：**尚未清权**；至少受 Ansible 边界、历史贡献权利链和容器依赖影响。
 - 付费部署/迁移/加固：可以按独立服务合同开展，但不会改变客户的软件许可证义务。
 

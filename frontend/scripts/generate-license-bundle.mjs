@@ -22,6 +22,8 @@ const repositoryLegalFiles = [
   'CONTRIBUTING.md',
   'CONTRIBUTING.zh-CN.md',
   'SECURITY.md',
+  'CONTAINER.md',
+  'CONTAINER.zh-CN.md',
 ]
 
 const packageLock = JSON.parse(await readFile(join(frontendRoot, 'package-lock.json'), 'utf8'))

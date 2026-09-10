@@ -4,8 +4,9 @@ import hashlib
 import json
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_LICENSE_SHA256 = "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
@@ -26,6 +27,11 @@ EXPECTED_THIRD_PARTY_LICENSES = {
 EXPECTED_PAYPAL_FUNDING = (
     'custom: ["https://www.paypal.me/yernsun"]'
 )
+EXPECTED_CONTAINER_BASES = (
+    "node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553",
+    "ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1",
+    "python:3.13-alpine3.23@sha256:75f27d686432419c9d42420b2b9ef605868c7a0682a6be10a6601fad46c2df01",
+)
 POLICY_FILES = (
     "README.md",
     "README.zh-CN.md",
@@ -40,6 +46,8 @@ POLICY_FILES = (
     "CLA_POLICY.md",
     "CLA_POLICY.zh-CN.md",
     "SECURITY.md",
+    "CONTAINER.md",
+    "CONTAINER.zh-CN.md",
     "NOTICE.md",
     "THIRD_PARTY_NOTICES.md",
     "docs/README.md",
@@ -128,6 +136,10 @@ def main() -> int:
         "generate-license-bundle.mjs" in frontend_metadata["scripts"]["build"],
         "frontend build must generate the production license bundle",
     )
+    _require(
+        "npm sbom --sbom-format=spdx" in frontend_metadata["scripts"]["build"],
+        "frontend build must generate the complete SPDX build dependency inventory",
+    )
     license_bundle = (ROOT / "frontend/scripts/generate-license-bundle.mjs").read_text(
         encoding="utf-8"
     )
@@ -152,9 +164,68 @@ def main() -> int:
         "FUNDING.yml target changed; verify the payee and update the legal policy before release",
     )
 
+    project_version = backend_metadata["project"]["version"]
+    locked_backend = next(
+        package for package in tomllib.loads((ROOT / "backend/uv.lock").read_text(encoding="utf-8"))["package"]
+        if package["name"] == "ops-composer"
+    )
+    api_source = (ROOT / "backend/src/ops_composer/main.py").read_text(encoding="utf-8")
+    system_source = (ROOT / "backend/src/ops_composer/api/system.py").read_text(encoding="utf-8")
+    openapi_contract = json.loads(
+        (ROOT / "frontend/scripts/openapi/contracts/auth.json").read_text(encoding="utf-8")
+    )
+    version_values = {
+        "backend lock": locked_backend["version"],
+        "frontend package": frontend_metadata["version"],
+        "frontend lock": frontend_lock["version"],
+        "frontend lock root": frontend_lock["packages"][""]["version"],
+        "OpenAPI contract": openapi_contract["info"]["version"],
+    }
+    for source_name, version in version_values.items():
+        _require(version == project_version, f"{source_name} version differs from backend project")
+    _require(
+        f'version="{project_version}"' in api_source,
+        "FastAPI version differs from backend project",
+    )
+    _require(
+        f'"version": "{project_version}"' in system_source,
+        "system API version differs from backend project",
+    )
+
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    for marker in ("LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md", "third_party"):
+    for marker in ("LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md", "CONTAINER.md", "third_party"):
         _require(marker in dockerfile, f"Dockerfile does not preserve legal material: {marker}")
+    for base in EXPECTED_CONTAINER_BASES:
+        base_pattern = rf"^FROM(?: --platform=\$BUILDPLATFORM)? {re.escape(base)} AS [A-Za-z0-9_-]+$"
+        _require(
+            re.search(base_pattern, dockerfile, flags=re.MULTILINE) is not None,
+            f"container base is not digest-pinned: {base}",
+        )
+    for marker in (
+        'org.opencontainers.image.source="https://github.com/yernsun/ops-composer"',
+        'org.opencontainers.image.licenses="AGPL-3.0-only"',
+        "frontend-build.spdx.json",
+    ):
+        _require(marker in dockerfile or marker in frontend_metadata["scripts"]["build"], f"container release metadata is missing: {marker}")
+
+    container_workflow = (ROOT / ".github/workflows/container-image.yml").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "ghcr.io/${{ github.repository }}",
+        "linux/amd64,linux/arm64",
+        "provenance: mode=max",
+        "sbom: true",
+        "aquasecurity/trivy-action@",
+        "actions/attest-build-provenance@",
+        "--verify-tag",
+    ):
+        _require(marker in container_workflow, f"container workflow is missing: {marker}")
+    unpinned_action = re.search(r"uses:\s+[^\s@]+@(?![0-9a-f]{40}(?:\s|$))[^\s#]+", container_workflow)
+    _require(
+        unpinned_action is None,
+        f"container workflow action is not pinned to a full commit: {unpinned_action.group(0) if unpinned_action else ''}",
+    )
 
     print("legal policy and license checks passed")
     return 0
