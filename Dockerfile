@@ -36,11 +36,16 @@ ENV UV_COMPILE_BYTECODE=1 \
     OPS_COMPOSER_PLAYBOOK_WORKSPACE=/workspace \
     OPS_COMPOSER_RUNTIME_DIR=/var/lib/ops-composer/runtime
 
-COPY backend/pyproject.toml backend/uv.lock ./
+COPY backend/pyproject.toml backend/uv.lock backend/LICENSE backend/NOTICE.md ./
+COPY backend/licenses ./licenses
 RUN uv sync --frozen --no-dev --no-install-project --extra auth
 COPY backend/src ./src
 RUN uv sync --frozen --no-dev --extra auth
 COPY --from=frontend-builder /build/frontend/dist ./static
+COPY LICENSE NOTICE.md THIRD_PARTY_NOTICES.md SUPPORT.md SUPPORT.zh-CN.md ./legal/
+COPY SECURITY.md COMMERCIAL_SERVICES.md COMMERCIAL_SERVICES.zh-CN.md ./legal/
+COPY CONTRIBUTING.md CONTRIBUTING.zh-CN.md CLA_POLICY.md CLA_POLICY.zh-CN.md ./legal/
+COPY third_party ./legal/third_party
 
 RUN mkdir -p /workspace /var/lib/ops-composer/runtime \
     && chown -R ops-composer:ops-composer /app /var/lib/ops-composer \

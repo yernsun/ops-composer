@@ -28,6 +28,7 @@ def require(tool: str) -> bool:
 
 
 def _run_checks() -> int:
+    run([sys.executable, "harness/check_legal.py"])
     run([sys.executable, "harness/check_architecture.py"])
     run([sys.executable, "harness/check_sql.py"])
     run([sys.executable, "harness/check_i18n.py"])

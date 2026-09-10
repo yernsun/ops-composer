@@ -1,0 +1,12 @@
+# GitHub Sponsors is intentionally not active yet.
+#
+# The configured repository identity points to @yernsun, but as of 2026-09-10 its
+# https://github.com/sponsors/yernsun URL redirects to the ordinary profile. After the intended
+# legal payee completes GitHub Sponsors onboarding and verifies tax/bank details, confirm that the
+# account is correct and then uncomment the following line:
+# github: yernsun
+
+# PayPal's Donate integration accepts a verified account email as its `business` identifier. This
+# address was explicitly provided by the project owner. It is voluntary funding, not a services
+# checkout or commercial-license purchase; see SUPPORT.md.
+custom: ["https://www.paypal.me/yernsun"]

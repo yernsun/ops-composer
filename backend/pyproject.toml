@@ -5,6 +5,8 @@ build-backend = "hatchling.build"
 [project]
 name = "ops-composer"
 version = "0.1.0"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE.md", "licenses/*"]
 requires-python = ">=3.11"
 dependencies = [
   "ansible-core>=2.18,<2.20",

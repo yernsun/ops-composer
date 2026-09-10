@@ -1,5 +1,35 @@
 # OpsComposer 常见问题
 
+## 企业可以不付费使用 OpsComposer 吗？
+
+可以，前提是遵守 `AGPL-3.0-only` 和所有适用的第三方许可证。AGPL 本身不收取企业使用费。
+原版内部使用、分发、修改以及通过网络提供修改版属于不同情形，应根据计划的部署方式阅读
+[许可证原文](LICENSE)，尤其是对应源码和远程网络交互条款。赞助不能替代许可证合规。
+
+## AGPL 会要求维护者提供售后吗？
+
+不会。OpsComposer 不附带保证；社区协助仅为尽力而为，不提供 SLA，也不承诺响应期限、修复或
+持续维护。详见 [SUPPORT.zh-CN.md](SUPPORT.zh-CN.md)。
+
+## GitHub Sponsors 赞助会买到什么？
+
+只提供鸣谢；赞助档位不得承诺专业服务、支持优先级或 SLA。GitHub Sponsors 与 PayPal 付款属于
+对一般维护的自愿资助，不会购买顾问服务、安全修复、AGPL 例外、治理权或商业许可证。
+PayPal 已配置为确认过的账号 `https://www.paypal.me/yernsun`；GitHub Sponsors 目标在完成入驻和核实前保持
+禁用。
+
+## 可以购买部署、迁移或安全加固吗？
+
+可视服务方档期，按独立书面合同和独立费用提供。Issue、赞助或非正式消息都不会自动启动服务或
+产生义务。范围、访问权限、交付物、验收、数据处理、知识产权、费用、责任及任何 SLA 都必须写入
+签署协议。详见 [COMMERCIAL_SERVICES.zh-CN.md](COMMERCIAL_SERVICES.zh-CN.md)。
+
+## 现在有商业软件许可证吗？
+
+目前没有。项目正在准备 CLA 治理路径，以便未来评估双许可证。CLA 现在尚未生效，在启用前不能
+合并外部贡献者受著作权保护的内容。未来商业许可证只能作为许可方实际控制权利的新增选择，不能
+撤销已有 AGPL 授权，也不能改授第三方代码。见 [CLA_POLICY.zh-CN.md](CLA_POLICY.zh-CN.md)。
+
 ## 为什么 API 启动失败并提示 migration pending？
 
 API 和 Worker 不会自动修改 Schema。先运行 `ops-composer migrate status`，再由一次性部署

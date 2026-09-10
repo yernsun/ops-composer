@@ -1,5 +1,42 @@
 # OpsComposer FAQ
 
+## Can a company use OpsComposer without paying?
+
+Yes, if it complies with `AGPL-3.0-only` and every applicable third-party license. The AGPL does
+not add an enterprise-use fee. Internal use of an unmodified copy, distribution, modification, and
+offering a modified version over a network are legally different cases, so review the actual
+[license](LICENSE)—especially its Corresponding Source and remote-network provisions—for the
+planned deployment. A sponsor payment is never a substitute for compliance.
+
+## Does the AGPL require maintainers to provide support?
+
+No. OpsComposer is provided without warranty, and community assistance is best-effort with no SLA,
+response deadline, fix commitment, or continued-maintenance promise. See [SUPPORT.md](SUPPORT.md).
+
+## What does a GitHub sponsorship purchase?
+
+Recognition only. Sponsorship tiers must not promise professional services, support priority, or
+an SLA. The project treats GitHub sponsorship and PayPal funding as voluntary general maintenance
+funding. They do not buy consulting, a security fix, an AGPL exception, governance, or a commercial
+license. PayPal is configured for the confirmed account
+`https://www.paypal.me/yernsun`; the GitHub Sponsors target remains disabled until onboarding and verification
+are complete.
+
+## Can deployment, migration, or security-hardening be purchased?
+
+They may be offered, subject to availability, under a separate written agreement and separate fee.
+No work or obligation starts from an issue, sponsorship, or informal message. Scope, access,
+deliverables, acceptance, data handling, intellectual property, fees, liability, and any SLA must
+be stated in the signed agreement. See [COMMERCIAL_SERVICES.md](COMMERCIAL_SERVICES.md).
+
+## Is a commercial software license available?
+
+Not currently. The project is preparing a CLA governance path so it may evaluate dual licensing in
+the future. The CLA itself is not yet active, and external copyrightable contributions cannot be
+merged until it is. Any future commercial license would be an additional option for rights the
+licensor actually controls; it would not revoke existing AGPL grants or relicense third-party code.
+See [CLA_POLICY.md](CLA_POLICY.md).
+
 ## Why does startup report pending migrations?
 
 API and worker processes never mutate the schema. Run `ops-composer migrate status`, then execute

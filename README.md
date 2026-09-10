@@ -26,6 +26,33 @@ Generator metadata, `.project-forge.yml`, and the template baseline are preserve
 See [docs/ops-composer-design.md](docs/ops-composer-design.md) for the complete product, data, and
 security design.
 
+## License, funding, and support
+
+OpsComposer project-authored code is released under the GNU Affero General Public License version
+3 only (`AGPL-3.0-only`). The exact terms in [LICENSE](LICENSE) control. Organizational and
+commercial use is permitted under that license; there is no separate "enterprise-use fee" in the
+AGPL. Distribution and modified network deployments can trigger source-code and notice duties,
+including the section 13 offer of Corresponding Source to remote users. Third-party components
+remain under their own licenses; review [NOTICE.md](NOTICE.md),
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the
+[dependency compliance notes](docs/legal/dependency-compliance.md) before releasing an image.
+
+Community support is best-effort and has no SLA. PayPal funding—and GitHub Sponsors once
+activated—is voluntary and does not buy support, services, an AGPL exception, or a commercial
+license. Deployment, migration, and security-hardening may be separately priced only under a
+written agreement. A commercial software license is not currently offered.
+
+- [Support and sponsorship policy](SUPPORT.md)
+- [Paid professional services](COMMERCIAL_SERVICES.md)
+- [Security reporting](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [CLA readiness policy](CLA_POLICY.md)
+
+The CLA process is not active yet. Until its legal recipient, final terms, privacy notice, and
+acceptance records are operational, external copyrightable contributions must not be merged. This
+protects the rights chain needed for any future dual-license evaluation without changing AGPL
+rights already granted.
+
 ## Production Compose
 
 Production has exactly four services: `db`, one-shot `migrate`, `api`, and `worker`. API and worker

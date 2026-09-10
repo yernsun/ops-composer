@@ -14,6 +14,10 @@ Use this page to route an engineering change to the rule set that owns it. Start
 | Playbook Web management, revisions, or source mode | [OpsComposer design §9](ops-composer-design.md#9-playbook-设计) | Database revisions are immutable; mounted files stay read-only |
 | Web Shell, PTY, WebSocket, or shared Host Lock | [OpsComposer design §5.7](ops-composer-design.md#57-web-shell-是连接绑定的临时执行) | Terminal bytes are ephemeral; Session, Origin, Ticket, lease, and host lock are mandatory |
 | Compose, Origin, keys, or runtime diagnosis | [FAQ](../FAQ.md) | Compare browser-visible values with resolved container configuration |
+| License, distribution, container release, or dependencies | [Dependency compliance](legal/dependency-compliance.md) | AGPL covers project-owned code; preserve every third-party license and corresponding-source duty |
+| Support, sponsorship, or paid services | [Support](../SUPPORT.md) and [professional services](../COMMERCIAL_SERVICES.md) | No community SLA; sponsorship is not payment for services or license rights |
+| External contributions or future dual licensing | [Contributing](../CONTRIBUTING.md) and [CLA policy](../CLA_POLICY.md) | Do not merge external copyrightable material until the CLA is active and verified |
+| Vulnerability disclosure | [Security policy](../SECURITY.md) | Use a private advisory; never publish secrets or vulnerability details |
 
 Run the governed checks from the repository root after a change:
 

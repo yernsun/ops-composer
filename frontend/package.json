@@ -2,13 +2,14 @@
   "name": "ops-composer-frontend",
   "private": true,
   "version": "0.1.0",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "engines": {
     "node": ">=22.13 <23 || >=24 <25"
   },
   "scripts": {
     "dev": "vite",
-    "build": "npm run api:check && npm run i18n:check && vue-tsc -b && vite build",
+    "build": "npm run api:check && npm run i18n:check && vue-tsc -b && vite build && node scripts/generate-license-bundle.mjs",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "vue-tsc -b",
     "test": "vitest run",

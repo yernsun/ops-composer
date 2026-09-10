@@ -20,6 +20,29 @@ Psycopg 3 async pool、Ansible Runner、Argon2id、RFC 6238 TOTP 和 AES-256-GCM
 
 完整产品与安全设计见 [docs/ops-composer-design.md](docs/ops-composer-design.md)。
 
+## 许可证、资助与支持
+
+OpsComposer 项目自有代码仅按 GNU Affero General Public License 第 3 版
+（`AGPL-3.0-only`）发布，以 [LICENSE](LICENSE) 原文为准。该许可证允许企业和商业场景使用，
+AGPL 本身不存在“企业使用必须付费”的附加条件；但分发或通过网络运行修改版时，可能触发源码与
+通知义务，包括第 13 条要求向远程用户提供对应源码。第三方组件继续适用各自许可证；发布镜像前
+应查看 [NOTICE.md](NOTICE.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和
+[依赖合规说明](docs/legal/dependency-compliance.md)。
+
+社区支持仅为尽力而为且没有 SLA。PayPal 资助以及未来启用的 GitHub Sponsors 都属于自愿资助，
+不会购买支持、服务、AGPL 例外或商业许可证。部署、迁移和安全加固只可通过另签书面合同单独
+报价。本仓库目前不提供商业软件许可证。
+
+- [支持与赞助政策](SUPPORT.zh-CN.md)
+- [付费专业服务](COMMERCIAL_SERVICES.zh-CN.md)
+- [安全漏洞报告](SECURITY.md)
+- [参与贡献](CONTRIBUTING.zh-CN.md)
+- [CLA 准备政策](CLA_POLICY.zh-CN.md)
+
+CLA 流程目前尚未启用。在接收授权的法律主体、最终条款、隐私声明和签署记录机制正式生效前，
+不得合并外部贡献者受著作权保护的内容。该门禁用于保护未来评估双许可证所需的权利链，不会改变
+已经授予的 AGPL 权利。
+
 ## P2 能力
 
 - `OWNER | ADMIN | OPERATOR | AUDITOR` 固定角色、24 小时一次性激活码、TOTP MFA、恢复码和
