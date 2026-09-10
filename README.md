@@ -43,6 +43,7 @@ license. Deployment, migration, and security-hardening may be separately priced 
 written agreement. A commercial software license is not currently offered.
 
 - [Support and sponsorship policy](SUPPORT.md)
+- [Sponsor general maintenance through PayPal](https://www.paypal.me/yernsun) — receiving account `https://www.paypal.me/yernsun`; verify the recipient before paying
 - [Paid professional services](COMMERCIAL_SERVICES.md)
 - [Security reporting](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
