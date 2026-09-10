@@ -19,9 +19,9 @@ OpsComposer 仅按 GNU Affero General Public License 第 3 版（`AGPL-3.0-only`
 
 ## 自愿资助：GitHub Sponsors 与 PayPal
 
-启用后的 GitHub Sponsors 与仓库 PayPal 链接均仅用于自愿资助项目的一般维护。已确认的 PayPal
-收款账号为 `https://www.paypal.me/yernsun`；付款前应在 PayPal 页面再次核对收款人。资助只提供鸣谢；赞助
-档位不得承诺专业服务、支持优先级或 SLA。资助不会购买：
+启用后的 GitHub Sponsors 与仓库 PayPal 链接均仅用于自愿资助项目的一般维护。付款前应在
+PayPal 页面再次核对公开的 PayPal.Me 个人资料。资助只提供鸣谢；赞助档位不得承诺专业服务、
+支持优先级或 SLA。资助不会购买：
 
 - 软件许可证或 AGPL 例外；
 - 支持优先级、响应时限、SLA、Roadmap 承诺或安全修复；

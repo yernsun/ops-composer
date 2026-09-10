@@ -26,9 +26,9 @@ Security reporting is not a paid service and does not require sponsorship.
 ## Voluntary funding: GitHub Sponsors and PayPal
 
 GitHub Sponsors, when enabled, and the repository's PayPal link are voluntary ways to fund general
-maintenance. The confirmed PayPal receiving account is `https://www.paypal.me/yernsun`; verify that recipient
-on PayPal before approving a payment. Funding provides recognition only. Sponsorship tiers must not
-promise professional services, support priority, or an SLA. Funding does not purchase:
+maintenance. Verify the public PayPal.Me profile before approving a payment. Funding provides
+recognition only. Sponsorship tiers must not promise professional services, support priority, or
+an SLA. Funding does not purchase:
 
 - a software license or an exception to the AGPL;
 - support priority, a response deadline, an SLA, a roadmap commitment, or a security fix;

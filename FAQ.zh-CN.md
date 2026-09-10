@@ -15,8 +15,8 @@
 
 只提供鸣谢；赞助档位不得承诺专业服务、支持优先级或 SLA。GitHub Sponsors 与 PayPal 付款属于
 对一般维护的自愿资助，不会购买顾问服务、安全修复、AGPL 例外、治理权或商业许可证。
-PayPal 已配置为确认过的账号 `https://www.paypal.me/yernsun`；GitHub Sponsors 目标在完成入驻和核实前保持
-禁用。
+PayPal 资助使用公开的 [PayPal.Me 个人资料](https://www.paypal.me/yernsun)；GitHub Sponsors
+目标在完成入驻和核实前保持禁用。
 
 ## 可以购买部署、迁移或安全加固吗？
 

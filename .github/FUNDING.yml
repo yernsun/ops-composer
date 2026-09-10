@@ -6,7 +6,6 @@
 # account is correct and then uncomment the following line:
 # github: yernsun
 
-# PayPal's Donate integration accepts a verified account email as its `business` identifier. This
-# address was explicitly provided by the project owner. It is voluntary funding, not a services
-# checkout or commercial-license purchase; see SUPPORT.md.
+# This public PayPal.Me profile avoids publishing a private receiving address. Funding is
+# voluntary, not a services checkout or commercial-license purchase; see SUPPORT.md.
 custom: ["https://www.paypal.me/yernsun"]

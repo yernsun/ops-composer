@@ -34,7 +34,7 @@ AGPL 本身不存在“企业使用必须付费”的附加条件；但分发或
 报价。本仓库目前不提供商业软件许可证。
 
 - [支持与赞助政策](SUPPORT.zh-CN.md)
-- [通过 PayPal 资助项目的一般维护](https://www.paypal.me/yernsun) — 收款账号 `https://www.paypal.me/yernsun`；付款前请再次核对收款人
+- [通过 PayPal 资助项目的一般维护](https://www.paypal.me/yernsun) — 付款前请再次核对 PayPal.Me 个人资料
 - [付费专业服务](COMMERCIAL_SERVICES.zh-CN.md)
 - [安全漏洞报告](SECURITY.md)
 - [参与贡献](CONTRIBUTING.zh-CN.md)

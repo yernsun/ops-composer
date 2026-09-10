@@ -18,9 +18,8 @@ response deadline, fix commitment, or continued-maintenance promise. See [SUPPOR
 Recognition only. Sponsorship tiers must not promise professional services, support priority, or
 an SLA. The project treats GitHub sponsorship and PayPal funding as voluntary general maintenance
 funding. They do not buy consulting, a security fix, an AGPL exception, governance, or a commercial
-license. PayPal is configured for the confirmed account
-`https://www.paypal.me/yernsun`; the GitHub Sponsors target remains disabled until onboarding and verification
-are complete.
+license. PayPal funding uses the public [PayPal.Me profile](https://www.paypal.me/yernsun); the
+GitHub Sponsors target remains disabled until onboarding and verification are complete.
 
 ## Can deployment, migration, or security-hardening be purchased?
 
